@@ -1,0 +1,3 @@
+// Icons and other executable resources. The lowest icon id becomes the .exe icon that
+// Explorer and the taskbar show; the app also loads it for its window.
+1 ICON "tinybrowser.ico"

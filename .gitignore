@@ -1,0 +1,8 @@
+# Compilado
+obj/
+tinybrowser.exe
+*.res
+*.log
+
+# SDK de WebView2: lo baja tools/fetch-sdk.ps1 (14 MB de archivos de Microsoft, no del repo)
+sdk/

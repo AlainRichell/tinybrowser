@@ -1,0 +1,8 @@
+# Fuentes con saltos LF; los binarios no se tocan
+* text=auto eol=lf
+
+*.ico binary
+*.exe binary
+*.res binary
+*.png binary
+*.lib binary
