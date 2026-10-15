@@ -47,11 +47,11 @@ constexpr wchar_t kCrispArgsVar[] = L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
 constexpr bool kDebugFit = true;  // appends each fit decision to diag.log in the profile folder
 constexpr UINT kHotkeyBar = 1;   // Ctrl+Alt+L
 constexpr UINT kHotkeyQuit = 2;  // Ctrl+Alt+Q
+constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
 constexpr int kIconId = 1;  // resource id of the donut in tinybrowser.rc
-constexpr wchar_t kInstanceMutex[] = L"tinybrowser.single.instance";
 constexpr wchar_t kSearchPrefix[] = L"https://www.google.com/search?q=";
 constexpr wchar_t kRuntimeUrl[] = L"https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 constexpr wchar_t kBootstrapperName[] = L"MicrosoftEdgeWebview2Setup.exe";
@@ -65,8 +65,11 @@ ComPtr<ICoreWebView2> g_webview;
 // subclass can ever see those clicks.
 std::wstring g_url;
 std::wstring g_startTarget;  // URL given on the command line, if any
+RECT g_placedRect = {};        // --place x y width height, when a duplicate asks for its spot
+bool g_hasPlacedRect = false;
 wchar_t g_resizeEdge[3] = {};  // edges being dragged ("", "n", "se", ...), empty when idle
 RECT g_resizeAnchor = {};      // window rectangle the drag started from
+bool g_showingBar = false;     // the document on screen is our own bar, not a page
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
 double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
@@ -88,13 +91,15 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   input:focus{outline:none;border-color:#4a90c2}
   button{flex:0 0 20px;height:20px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;border-radius:4px}
   button:hover{color:#fff;background:#253141}
+  button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
+  button:disabled:hover{color:#46586a;background:#141c26}
   #hint{font-size:9px;line-height:1.25;color:#64748b}
   kbd{color:#9db2c6;background:#1a2330;border-radius:3px;padding:0 3px;font:inherit}
 </style></head><body>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go">&#9166;</button></div>
-<div class="row"><button id="back" title="Back">&#8249;</button><button id="fwd" title="Forward">&#8250;</button><button id="reload" title="Reload">&#8635;</button><button id="close" title="Close">&#10005;</button></div>
-<div id="hint"><kbd>Ctrl+Alt+L</kbd> abre esta barra &middot; <kbd>Ctrl+Alt+Q</kbd> cierra</div>
+<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="dup" title="Duplicate in another window (Ctrl+Alt+D)"%DISABLED%>&#10697;</button><button id="close" title="Close (Ctrl+Alt+Q)">&#10005;</button></div>
+<div id="hint"><kbd>Ctrl+Alt+L</kbd> barra<br><kbd>+D</kbd> duplicar &middot; <kbd>+Q</kbd> cerrar</div>
 <script>
 (function () {
   function send(message) { try { window.chrome.webview.postMessage(message); } catch (e) { } }
@@ -109,6 +114,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   document.getElementById("back").onclick = function () { send("B"); };
   document.getElementById("fwd").onclick = function () { send("F"); };
   document.getElementById("reload").onclick = function () { send("R"); };
+  document.getElementById("dup").onclick = function () { send("C"); };
   document.getElementById("close").onclick = function () { send("X"); };
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
@@ -313,6 +319,13 @@ void ShowBar() {
   if (at != std::wstring::npos) {
     html.replace(at, 5, EscapeAttribute(g_url));
   }
+  // Nothing to go back to, reload or duplicate until a page has been loaded: those buttons say so
+  // instead of doing nothing or, worse, reloading the bar itself into a blank window.
+  const size_t disabled = html.find(L"%DISABLED%");
+  if (disabled != std::wstring::npos) {
+    html.replace(disabled, 10, g_url.empty() ? L" disabled" : L"");
+  }
+  g_showingBar = true;
   ResetFit();
   if (g_controller) {
     g_controller->put_ZoomFactor(1.0);  // the bar page is sized for the raw window
@@ -329,6 +342,7 @@ void Navigate(const std::wstring& target) {
     return;
   }
   g_url = url;
+  g_showingBar = false;
   ResetFit();
   g_webview->Navigate(url.c_str());
 }
@@ -339,11 +353,15 @@ void RunInPage(const wchar_t* script) {
   }
 }
 
+void DuplicateInNewInstance();  // defined with the placement helpers below
+
 void HandleHotkey(UINT id) {
   if (id == kHotkeyBar) {
     ShowBar();
   } else if (id == kHotkeyQuit) {
     PostMessageW(g_window, WM_CLOSE, 0, 0);
+  } else if (id == kHotkeyDuplicate) {
+    DuplicateInNewInstance();
   }
 }
 
@@ -354,6 +372,18 @@ void HandleHotkey(UINT id) {
 constexpr UINT kHotkeyMessage = WM_APP + 1;
 constexpr UINT kHotkeyKeyL = L'L';
 constexpr UINT kHotkeyKeyQ = L'Q';
+constexpr UINT kHotkeyKeyD = L'D';
+
+struct HotkeyChord {
+  UINT key;
+  UINT id;
+};
+constexpr HotkeyChord kHotkeys[] = {
+    {kHotkeyKeyL, kHotkeyBar},
+    {kHotkeyKeyQ, kHotkeyQuit},
+    {kHotkeyKeyD, kHotkeyDuplicate},
+};
+constexpr int kHotkeyCount = 3;
 
 bool g_ctrlDown = false;
 bool g_altDown = false;
@@ -361,7 +391,39 @@ bool g_altDown = false;
 bool HotkeyChordPressed(UINT key) {
   // Locked here instead of through GetAsyncKeyState, which does not report the injected
   // modifier state reliably while the hook is running.
-  return g_ctrlDown && g_altDown && (key == kHotkeyKeyL || key == kHotkeyKeyQ);
+  if (!g_ctrlDown || !g_altDown) {
+    return false;
+  }
+  for (const HotkeyChord& chord : kHotkeys) {
+    if (chord.key == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// With several windows on screen a shortcut has to mean the one you are using. With a single
+// window it keeps working from anywhere, which is how it behaved before clones existed.
+int g_instanceCount = 0;
+
+bool HotkeysApplyHere() {
+  const HWND front = GetForegroundWindow();
+  if (front && (front == g_window || IsChild(g_window, front))) {
+    return true;
+  }
+  g_instanceCount = 0;
+  EnumWindows(
+      [](HWND window, LPARAM) -> BOOL {
+        wchar_t name[64] = {};
+        if (GetClassNameW(window, name, 64) > 0 && std::wcscmp(name, kWindowClass) == 0) {
+          if (++g_instanceCount > 1) {
+            return FALSE;  // two is all we need to know
+          }
+        }
+        return TRUE;
+      },
+      0);
+  return g_instanceCount <= 1;
 }
 
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
@@ -384,22 +446,23 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
         break;
     }
 
-    for (UINT candidate : {kHotkeyKeyL, kHotkeyKeyQ}) {
-      if (key->vkCode == candidate) {
-        static bool down[2] = {false, false};
-        const int slot = candidate == kHotkeyKeyL ? 0 : 1;
-        if (!pressed) {
-          down[slot] = false;
-        } else if (!down[slot]) {  // ignore auto-repeat
-          down[slot] = true;
-          if (HotkeyChordPressed(candidate)) {
-            // Only post from here: the hook must return fast or Windows drops it.
-            PostMessageW(g_window, kHotkeyMessage, candidate == kHotkeyKeyL ? kHotkeyBar : kHotkeyQuit, 0);
-            return 1;
-          }
-        }
-        break;
+    for (int i = 0; i < kHotkeyCount; ++i) {
+      const HotkeyChord& chord = kHotkeys[i];
+      if (key->vkCode != chord.key) {
+        continue;
       }
+      static bool down[kHotkeyCount] = {};
+      if (!pressed) {
+        down[i] = false;
+      } else if (!down[i]) {  // ignore auto-repeat
+        down[i] = true;
+        if (HotkeyChordPressed(chord.key) && HotkeysApplyHere()) {
+          // Only post from here: the hook must return fast or Windows drops it.
+          PostMessageW(g_window, kHotkeyMessage, chord.id, 0);
+          return 1;
+        }
+      }
+      break;
     }
   }
   return CallNextHookEx(nullptr, code, wparam, lparam);
@@ -423,9 +486,12 @@ void OnBarCommand(const std::wstring& message) {
   }
   switch (message[0]) {
     case L'G': Navigate(message.substr(1)); break;
-    case L'B': RunInPage(L"history.back()"); break;
-    case L'F': RunInPage(L"history.forward()"); break;
-    case L'R': RunInPage(L"location.reload()"); break;
+    case L'B': if (!g_url.empty()) RunInPage(L"history.back()"); break;
+    case L'F': if (!g_url.empty()) RunInPage(L"history.forward()"); break;
+    // While the bar is on screen the current document is the bar itself, so "reload" has to mean
+    // the page we remember; reloading the bar would leave a blank window and no bar at all.
+    case L'R': if (!g_url.empty()) Navigate(g_url); break;
+    case L'C': DuplicateInNewInstance(); break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
     case L'S': ShowBar(); break;
     case L'M': {
@@ -629,10 +695,48 @@ void DefaultPlacement(int* x, int* y) {
 }
 
 void FitAndPlace() {
+  if (g_hasPlacedRect) {
+    SetWindowPos(g_window, nullptr, g_placedRect.left, g_placedRect.top,
+                 g_placedRect.right - g_placedRect.left, g_placedRect.bottom - g_placedRect.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
   int x = 0;
   int y = 0;
   DefaultPlacement(&x, &y);
   SetWindowPos(g_window, nullptr, x, y, kWidth, kHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// A duplicate opens the same page beside this one: same size, shifted a bit so it is visible.
+void DuplicateInNewInstance() {
+  if (!g_window || g_url.empty()) {
+    return;
+  }
+  wchar_t exe[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+    return;
+  }
+  RECT rect = {};
+  if (!GetWindowRect(g_window, &rect)) {
+    return;
+  }
+  RECT work = {};
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    work.left = 0;
+    work.top = 0;
+  }
+  int x = rect.left - kMargin;
+  int y = rect.top - kMargin;
+  if (x < work.left) {
+    x = work.left;
+  }
+  if (y < work.top) {
+    y = work.top;
+  }
+  wchar_t arguments[900] = {};
+  wsprintfW(arguments, L"--place %d %d %d %d \"%s\"", x, y, rect.right - rect.left,
+            rect.bottom - rect.top, g_url.c_str());
+  ShellExecuteW(nullptr, L"open", exe, arguments, nullptr, SW_SHOWNORMAL);
 }
 
 // The page cannot measure the window on its own (the fitted layout is 746 CSS px wide inside 160
@@ -745,7 +849,17 @@ void CreateWebView() {
                       EventRegistrationToken navigatedToken = {};
                       g_webview->add_NavigationCompleted(
                           Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                              [](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                              [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                                // What the page really is, taken from the engine instead of from
+                                // our own calls, so a link click also updates it. The bar's own
+                                // document is skipped: it would otherwise erase the page's URL.
+                                if (!g_showingBar && sender) {
+                                  LPWSTR source = nullptr;
+                                  if (SUCCEEDED(sender->get_Source(&source)) && source) {
+                                    g_url = source;
+                                    CoTaskMemFree(source);
+                                  }
+                                }
                                 // Pages keep widening as they load, so the fit is measured
                                 // in a few passes instead of once.
                                 StartFit();
@@ -830,20 +944,26 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  g_startTarget = Trim(commandLine ? commandLine : L"");
+  const std::wstring arguments = Trim(commandLine ? commandLine : L"");
+  if (arguments.compare(0, 8, L"--place ") == 0) {
+    // A duplicate asks for its own rectangle so the copy does not land on top of the original.
+    const wchar_t* rest = arguments.c_str() + 8;
+    wchar_t* end = nullptr;
+    const long values[4] = {std::wcstol(rest, &end, 10),
+                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0,
+                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0,
+                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0};
+    g_placedRect.left = (int)values[0];
+    g_placedRect.top = (int)values[1];
+    g_placedRect.right = (int)(values[0] + values[2]);
+    g_placedRect.bottom = (int)(values[1] + values[3]);
+    g_hasPlacedRect = values[2] > 0 && values[3] > 0;
+    g_startTarget = Trim(end ? std::wstring(end) : std::wstring());
+  } else {
+    g_startTarget = arguments;
+  }
   if (g_startTarget.size() >= 2 && g_startTarget.front() == L'"' && g_startTarget.back() == L'"') {
     g_startTarget = g_startTarget.substr(1, g_startTarget.size() - 2);
-  }
-
-  // A second copy would fight for the same hotkeys and look identical on screen.
-  HANDLE single = CreateMutexW(nullptr, TRUE, kInstanceMutex);
-  if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
-    const HWND existing = FindWindowW(kWindowClass, kTitle);
-    if (existing) {
-      ShowWindow(existing, SW_SHOW);
-      SetForegroundWindow(existing);
-    }
-    return 0;
   }
 
   const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -871,10 +991,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
 
   int x = 0;
   int y = 0;
-  DefaultPlacement(&x, &y);
+  int width = kWidth;
+  int height = kHeight;
+  if (g_hasPlacedRect) {
+    x = g_placedRect.left;
+    y = g_placedRect.top;
+    width = g_placedRect.right - g_placedRect.left;
+    height = g_placedRect.bottom - g_placedRect.top;
+  } else {
+    DefaultPlacement(&x, &y);
+  }
   g_window = CreateWindowExW(
       WS_EX_TOPMOST, kWindowClass, kTitle, WS_POPUP,
-      x, y, kWidth, kHeight,
+      x, y, width, height,
       nullptr, nullptr, instance, nullptr);
   if (!g_window) {
     return 1;

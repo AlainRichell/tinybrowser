@@ -22,9 +22,16 @@ se copia a cualquier PC con Windows y anda.
   en la misma esquina de la pantalla. Al cambiar el ancho, la página se vuelve a ajustar sola.
 - Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
   (incluso encima de una página cargada).
-- Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra.
+- Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra. Recargar y atrás
+  actúan sobre la página que tenías cargada, no sobre la barra. Hasta que no hayas cargado una
+  página, esos botones (y el de duplicar) aparecen apagados: no hay nada sobre qué actuar.
 - Los enlaces que abren pestaña nueva se cargan en la misma ventana.
-- Una sola instancia: si la abrís de nuevo, trae al frente la que ya está.
+- **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
+  pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
+- El botón de los cuadraditos de la barra, o `Ctrl+Alt+D`, abre la página actual en **otra ventana**:
+  hereda el tamaño y aparece corrida unos píxeles para no tapar la original.
+- Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
+  siguen funcionando desde cualquier programa, como antes.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
 
 ## Requisitos
@@ -112,8 +119,9 @@ medir sin instrumentar el programa otra vez.
 
 ## Estado
 
-Anda: navegar, buscar, atrás/adelante/recargar, scroll, zoom, arrastre, atajos globales, instancia
-única, sesiones persistentes, icono propio y cierre limpio (sin procesos huérfanos).
+Anda: navegar, buscar, atrás/adelante/recargar, scroll, zoom, arrastre, redimensionado (mínimo
+60x60), varias ventanas a la vez con duplicar la actual en otra, atajos, sesiones persistentes,
+icono propio y cierre limpio (sin procesos huérfanos).
 
 Todavía no: historial navegable, autocompletado en la barra, pestañas ni diálogos para elegir el
 perfil. El zoom se reajusta por página, así que una página muy ancha queda con letra chica.
