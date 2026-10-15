@@ -887,6 +887,10 @@ void CreateWebView() {
                       GetClientRect(g_window, &bounds);
                       g_controller->put_Bounds(bounds);
                       g_controller->put_IsVisible(TRUE);
+                      // The engine has to be told, because the window's own focus notice arrives
+                      // before the controller exists: without this the address field is drawn
+                      // focused but the keystrokes go nowhere until you click the window.
+                      g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
                       PublishWindowSize();
 
                       EventRegistrationToken messageToken = {};
@@ -1091,6 +1095,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
 
   ShowWindow(g_window, showCommand);
   FitAndPlace();
+  // Opened by hand, the app should be ready to type in: the window comes forward and keeps the
+  // keyboard focus, and the engine is reminded of it once the controller exists.
+  SetForegroundWindow(g_window);
+  SetFocus(g_window);
   CreateWebView();
 
   MSG message = {};

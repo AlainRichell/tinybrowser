@@ -13,7 +13,8 @@ se copia a cualquier PC con Windows y anda.
 
 - Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima.
 - También acepta una dirección: `tinybrowser.exe es.wikipedia.org` (sirve para accesos directos).
-- Escribís la dirección y Enter. Sin puntos = búsqueda en Google.
+- Escribís la dirección y Enter. Sin puntos = búsqueda en Google. Al abrir, el cursor ya está en
+  el campo: escribís directo, sin cliquear.
 - Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una
   esquina" de la página. `Ctrl` + rueda para acercar a mano. La barra y la pantalla inicial no se
   escalan: sus controles mantienen el mismo tamaño, tenga la ventana el tamaño que tenga.
