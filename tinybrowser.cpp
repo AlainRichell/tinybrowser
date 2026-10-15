@@ -10,7 +10,6 @@
 #define _UNICODE
 
 #include <windows.h>
-#include <commctrl.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <cctype>
@@ -22,7 +21,6 @@
 
 #include "WebView2.h"
 
-#pragma comment(lib, "comctl32.lib")  // SetWindowSubclass, for the child window's cursor
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -211,7 +209,6 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
   // The cursor on the window's edges belongs to the page, because CSS is the one thing the engine
   // obeys: the host cannot set it (the engine's own cursor handling wins), which was measured. The
   // host still owns the drag itself -- over a scrollbar the page never sees the mouse.
-  var EDGE = 4;
   var cursorStyle = null;
   function ensureCursorStyle() {
     if (cursorStyle || !document.head) { return; }
@@ -235,17 +232,9 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
               : (edge === "nw" || edge === "se") ? "tb-nwse" : "tb-nesw";
     root.className = (rest ? rest + " " : "") + shape;
   }
-  document.addEventListener("mousemove", function (e) {
-    var size = window.__tinybrowserSize || [window.innerWidth, window.innerHeight];
-    var x = e.clientX * size[0] / window.innerWidth;
-    var y = e.clientY * size[1] / window.innerHeight;
-    var vertical = y < EDGE ? "n" : (y >= size[1] - EDGE ? "s" : "");
-    var horizontal = x < EDGE ? "w" : (x >= size[0] - EDGE ? "e" : "");
-    setEdgeClass(vertical + horizontal);
-  }, true);
-  document.addEventListener("mouseleave", function () { setEdgeClass(""); }, true);
-  // The host sees the mouse even where the page cannot (over a scrollbar) and drives this when it
-  // does: the page keeps its own handling for everywhere else.
+  // Only the host decides this. It sees the mouse everywhere -- including over a scrollbar, which the
+  // page is never told about -- and it knows where the corners reach; the page's own version of that
+  // sum could disagree and fight it.
   window.__tinybrowserSetEdge = setEdgeClass;
 })();)JS";
 
@@ -330,7 +319,6 @@ std::wstring UserDataFolder() {
 }
 
 void ResizeIfCanonical(int width, int height);  // defined with the placement helpers below
-void PublishWindowSize();  // tells the page the physical size, for its edge cursor
 void PublishEdgeCursor(int edges);  // tells the page which edge the pointer is on
 
 // Ctrl+wheel zoom is a feature on a page and a nuisance on the bar: it would shrink the bar's
@@ -519,9 +507,13 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
 
 
 // How close to the window's own edge counts as grabbing it, in physical pixels. Six rather than
-// four: on a window this small the corner target was a single pixel, and finding the exact point to
-// resize from was needlessly hard with a real mouse.
+// four: on a window this small the point to resize from was needlessly hard to find with a mouse.
 constexpr int kEdge = 6;
+// How far a corner reaches, per side. The straight edges are grabbed along the whole window, so a
+// narrow band costs nothing there; the corners are the handle that gets used most and used to be a
+// few pixels, where a small drift towards one of the sides switched the pointer to the axis shape.
+constexpr int kCorner = 14;
+
 
 bool InsideWindow(POINT point) {
   RECT rect = {};
@@ -536,53 +528,23 @@ int EdgesAt(POINT point) {
   if (!InsideWindow(point) || !GetWindowRect(g_window, &rect)) {
     return 0;
   }
+  const int fromLeft = point.x - rect.left;
+  const int fromRight = rect.right - point.x;
+  const int fromTop = point.y - rect.top;
+  const int fromBottom = rect.bottom - point.y;
+  // Inside a corner the diagonal is kept for the whole corner square, taking the nearest side of
+  // each axis, so drifting a little towards one edge does not lose it.
+  const bool nearSideX = fromLeft < kCorner || fromRight < kCorner;
+  const bool nearSideY = fromTop < kCorner || fromBottom < kCorner;
+  if (nearSideX && nearSideY) {
+    return (fromTop <= fromBottom ? 1 : 2) | (fromLeft <= fromRight ? 4 : 8);
+  }
   int edges = 0;
-  if (point.y - rect.top < kEdge) edges |= 1;        // north
-  if (rect.bottom - point.y <= kEdge) edges |= 2;    // south
-  if (point.x - rect.left < kEdge) edges |= 4;       // west
-  if (rect.right - point.x <= kEdge) edges |= 8;     // east
+  if (fromTop < kEdge) edges |= 1;        // north
+  if (fromBottom <= kEdge) edges |= 2;    // south
+  if (fromLeft < kEdge) edges |= 4;       // west
+  if (fromRight <= kEdge) edges |= 8;     // east
   return edges;
-}
-
-// The shape the pointer shows on each combination of edges.
-LPCWSTR EdgeCursorShape(int edges) {
-  const bool vertical = (edges & 1) || (edges & 2);
-  const bool horizontal = (edges & 4) || (edges & 8);
-  if (vertical && horizontal) {
-    const bool downRight = ((edges & 1) && (edges & 4)) || ((edges & 2) && (edges & 8));
-    return downRight ? IDC_SIZENWSE : IDC_SIZENESW;
-  }
-  if (vertical) {
-    return IDC_SIZENS;
-  }
-  return IDC_SIZEWE;
-}
-
-constexpr UINT_PTR kChildCursorId = 1;
-
-// The engine decides every cursor inside its own child windows, and over a scrollbar it paints its
-// own: the page never receives the mouse there, so the resize cursor disappeared exactly on the
-// strips where it was needed most. The child windows are subclassed so the window's own edges are
-// answered here instead, using the same edge test the resize itself uses.
-LRESULT CALLBACK WebViewChildProc(HWND child, UINT message, WPARAM wparam, LPARAM lparam,
-                                  UINT_PTR id, DWORD_PTR ref) {
-  UNREFERENCED_PARAMETER(id);
-  UNREFERENCED_PARAMETER(ref);
-  // The engine sets its own cursor while processing the message (over a scrollbar it paints an
-  // arrow), so the edge cursor is applied AFTER handing the message over: the last word is ours.
-  const bool aboutCursor = message == WM_MOUSEMOVE ||
-                           (message == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT);
-  const LRESULT result = DefSubclassProc(child, message, wparam, lparam);
-  if (aboutCursor) {
-    POINT point = {};
-    if (GetCursorPos(&point)) {
-      const int edges = EdgesAt(point);
-      if (edges) {
-        SetCursor(LoadCursorW(nullptr, EdgeCursorShape(edges)));
-      }
-    }
-  }
-  return result;
 }
 
 void EdgeChars(int edges) {
@@ -885,29 +847,19 @@ void PublishEdgeCursor(int edges) {
   const bool horizontal = (edges & 4) || (edges & 8);
   const wchar_t* name = L"";
   if (vertical && horizontal) {
+    // The page names a diagonal by its two sides ("nw", "se"), not by the cursor they produce.
     const bool downRight = ((edges & 1) && (edges & 4)) || ((edges & 2) && (edges & 8));
-    name = downRight ? L"nwse" : L"nesw";
+    name = downRight ? L"nw" : L"ne";
   } else if (vertical) {
-    name = L"ns";
+    name = (edges & 1) ? L"n" : L"s";
   } else if (horizontal) {
-    name = L"ew";
+    name = (edges & 4) ? L"w" : L"e";
   }
   wchar_t script[96] = {};
   wsprintfW(script, L"window.__tinybrowserSetEdge&&window.__tinybrowserSetEdge('%ws');", name);
   g_webview->ExecuteScript(script, nullptr);
 }
 
-void PublishWindowSize() {
-  if (!g_webview) {
-    return;
-  }
-  RECT client = {};
-  GetClientRect(g_window, &client);
-  wchar_t script[96] = {};
-  wsprintfW(script, L"window.__tinybrowserSize=[%d,%d];", (int)(client.right - client.left),
-            (int)(client.bottom - client.top));
-  g_webview->ExecuteScript(script, nullptr);
-}
 
 void ResetFit() {
   g_fitPass = 0;
@@ -922,7 +874,6 @@ void StartFit() {
     return;
   }
   ResetFit();
-  PublishWindowSize();  // the page's edge cursor needs the size it is living in
   SetTimer(g_window, kFitTimer, kFitDelayFirst, nullptr);
 }
 void OnFitTimer() {
@@ -1102,13 +1053,6 @@ void CreateWebView() {
                       GetClientRect(g_window, &bounds);
                       g_controller->put_Bounds(bounds);
                       g_controller->put_IsVisible(TRUE);
-                      EnumChildWindows(
-                          g_window,
-                          [](HWND child, LPARAM) -> BOOL {
-                            SetWindowSubclass(child, WebViewChildProc, kChildCursorId, 0);
-                            return TRUE;
-                          },
-                          0);
                       // The engine paints its own background before the content catches up, and by
                       // default that is white: growing the window showed a pale strip on the freshly
                       // exposed edge. Same colour as the window, so a resize looks even.
@@ -1124,7 +1068,6 @@ void CreateWebView() {
                       // before the controller exists: without this the address field is drawn
                       // focused but the keystrokes go nowhere until you click the window.
                       g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
-                      PublishWindowSize();
 
                       EventRegistrationToken messageToken = {};
                       g_webview->add_WebMessageReceived(
@@ -1221,7 +1164,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       } else if (wparam == kResizeTimer) {
         KillTimer(window, kResizeTimer);
         if (g_controller) {
-          PublishWindowSize();  // the edge cursor needs the size, and only now is it settled
           // No zoom reset here: the page is measured in CSS pixels, which do not depend on the
           // zoom factor, so a reset only made the content jump to 1:1 and back on every settle.
           StartFit();
