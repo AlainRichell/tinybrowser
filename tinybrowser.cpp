@@ -220,18 +220,39 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
     var y = clientY * size[1] / window.innerHeight;
     var vertical = y < EDGE ? "n" : (y >= size[1] - EDGE ? "s" : "");
     var horizontal = x < EDGE ? "w" : (x >= size[0] - EDGE ? "e" : "");
-    return horizontal + vertical;
+    // Vertical first: the corners come out as nw/ne/sw/se, the names the cursor rules use.
+    return vertical + horizontal;
   }
-  function cursorFor(edge) {
-    if (edge === "n" || edge === "s") { return "ns-resize"; }
-    if (edge === "w" || edge === "e") { return "ew-resize"; }
-    if (edge === "nw" || edge === "se") { return "nwse-resize"; }
-    return "nesw-resize";
+  // The cursor has to beat whatever the page sets on the element under the pointer, so it goes
+  // through a class on <html> plus an !important rule: an inherited cursor loses to any element
+  // that declares its own, which is why the edge only reacted where the page did not.
+  var cursorStyle = null;
+  function ensureCursorStyle() {
+    if (cursorStyle || !document.head) { return; }
+    cursorStyle = document.createElement("style");
+    cursorStyle.textContent =
+      "html.tb-ns,html.tb-ns *{cursor:ns-resize !important}" +
+      "html.tb-ew,html.tb-ew *{cursor:ew-resize !important}" +
+      "html.tb-nwse,html.tb-nwse *{cursor:nwse-resize !important}" +
+      "html.tb-nesw,html.tb-nesw *{cursor:nesw-resize !important}";
+    document.head.appendChild(cursorStyle);
+  }
+  function setEdgeCursor(edge) {
+    var root = document.documentElement;
+    var rest = root.className.replace(/\btb-(ns|ew|nwse|nesw)\b/g, "").replace(/\s+/g, " ").trim();
+    if (!edge) {
+      root.className = rest;
+      return;
+    }
+    ensureCursorStyle();
+    var shape = (edge === "n" || edge === "s") ? "tb-ns" : (edge === "w" || edge === "e") ? "tb-ew"
+              : (edge === "nw" || edge === "se") ? "tb-nwse" : "tb-nesw";
+    root.className = (rest ? rest + " " : "") + shape;
   }
   document.addEventListener("mousemove", function (e) {
-    var edge = edgeAt(e.clientX, e.clientY);
-    document.documentElement.style.cursor = edge ? cursorFor(edge) : "";
+    setEdgeCursor(edgeAt(e.clientX, e.clientY));
   }, true);
+  document.addEventListener("mouseleave", function () { setEdgeCursor(""); }, true);
   document.addEventListener("mousedown", function (e) {
     if (e.button !== 0 || e.altKey) { return; }
     var edge = edgeAt(e.clientX, e.clientY);
