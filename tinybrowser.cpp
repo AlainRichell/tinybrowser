@@ -26,12 +26,20 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-constexpr int  kWidth = 160;
+constexpr int  kWidth = 160;      // page size: what a loaded page needs to be readable
 constexpr int  kHeight = 90;
+// The bar has its own size: at 141 px wide the magnifier button lands exactly on top of the close
+// button (measured: 0.0 px apart), and at 77 px tall the brand line gets the same room above and
+// below it. Navigating switches the window back to the page size and showing the bar switches it
+// back here, so the layout the user asked for is the one the start page always has.
+constexpr int  kBarWidth = 141;
+constexpr int  kBarHeight = 77;
 constexpr int  kMinWidth = 60;   // the window can be resized down to this and no further
 constexpr int  kMinHeight = 60;
 constexpr int  kMargin = 24;   // gap to the right and bottom edges of the desktop
 constexpr UINT_PTR kFitTimer = 1;      // one-shot: measure the page after it settles
+constexpr UINT_PTR kResizeTimer = 2;   // one-shot: re-fit once the resize drag settles
+constexpr UINT kResizeSettle = 180;    // ms of quiet before that happens
 constexpr double kMinZoom = 0.10;
 constexpr double kMaxZoom = 1.0;
 
@@ -58,17 +66,23 @@ constexpr wchar_t kBootstrapperName[] = L"MicrosoftEdgeWebview2Setup.exe";
 
 HWND g_window = nullptr;
 HHOOK g_keyboardHook = nullptr;
+HHOOK g_mouseHook = nullptr;
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
-// Resizing is driven from inside the page (see kPageScript): the window that really receives the
-// mouse is the engine's render widget, and it belongs to the browser process, so no in-process
-// subclass can ever see those clicks.
+// Resizing and moving the window are driven from HERE, never from the page. Over a scrollbar the
+// engine hands the drag to the scrollbar and the page stops seeing the mouse entirely (measured:
+// no movement arrived, and not even the hover cursor), so a page-side resize cannot cover that
+// strip. A low level mouse hook sees the input before anything can take it -- the same trick the
+// global shortcuts use -- and the page is left with nothing to do about window geometry.
 std::wstring g_url;
 std::wstring g_startTarget;  // URL given on the command line, if any
 RECT g_placedRect = {};        // --place x y width height, when a duplicate asks for its spot
 bool g_hasPlacedRect = false;
 wchar_t g_resizeEdge[3] = {};  // edges being dragged ("", "n", "se", ...), empty when idle
 RECT g_resizeAnchor = {};      // window rectangle the drag started from
+POINT g_dragStart = {};        // pointer position when the drag began
+bool g_dragActive = false;     // a hook-driven drag is in progress
+bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
@@ -95,7 +109,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
   button:disabled:hover{color:#46586a;background:#141c26}
   kbd{color:#9db2c6;background:#1a2330;border-radius:3px;padding:0 3px;font:inherit}
-  #brand{position:absolute;right:5px;bottom:2px;font-size:9px;letter-spacing:.3px;color:#33455a}
+  #brand{position:absolute;right:5px;bottom:4px;font-size:9px;letter-spacing:.3px;color:#33455a}
   #commands{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:5;padding:4px 6px;
     background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.25;
     color:#9db2c6;overflow:auto}
@@ -173,6 +187,10 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 // Document-start script for every page: keep the bar reachable, stop target=_blank from
 // asking for a popup window the host does not have, and move the window on Alt+drag (the
 // host never sees mouse input that the engine already consumed).
+// Document-start script for every page: keep the bar reachable, and stop target=_blank from
+// asking for a popup window the host does not have. Window geometry is the HOST's job, not the
+// page's: over a scrollbar the engine stops sending the page any mouse at all, so a page-side
+// resize could never cover that strip (see the mouse hook above).
 constexpr wchar_t kPageScript[] = LR"JS((function () {
   function post(message) {
     try { window.chrome.webview.postMessage(message); } catch (err) { }
@@ -187,45 +205,10 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
       post("S");
     }
   }, true);
-  document.addEventListener("mousedown", function (e) {
-    if (!e.altKey || e.button !== 0) { return; }
-    e.preventDefault();
-    e.stopPropagation();
-    var lastX = e.screenX;
-    var lastY = e.screenY;
-    function move(ev) {
-      post("M" + (ev.screenX - lastX) + "," + (ev.screenY - lastY));
-      lastX = ev.screenX;
-      lastY = ev.screenY;
-    }
-    function stop() {
-      document.removeEventListener("mousemove", move, true);
-      document.removeEventListener("mouseup", stop, true);
-    }
-    document.addEventListener("mousemove", move, true);
-    document.addEventListener("mouseup", stop, true);
-  }, true);
-
-  // The window has no border and the engine's input window belongs to another process, so the
-  // edges are found by coordinates: near an edge the pointer changes, and pressing there starts
-  // a resize session. Only the edge and the screen deltas are sent; the host owns the geometry.
+  // The cursor on the window's edges belongs to the page, because CSS is the one thing the engine
+  // obeys: the host cannot set it (the engine's own cursor handling wins), which was measured. The
+  // host still owns the drag itself -- over a scrollbar the page never sees the mouse.
   var EDGE = 4;
-  function windowSize() {
-    var size = window.__tinybrowserSize;
-    return (size && size.length === 2) ? size : [window.innerWidth, window.innerHeight];
-  }
-  function edgeAt(clientX, clientY) {
-    var size = windowSize();
-    var x = clientX * size[0] / window.innerWidth;
-    var y = clientY * size[1] / window.innerHeight;
-    var vertical = y < EDGE ? "n" : (y >= size[1] - EDGE ? "s" : "");
-    var horizontal = x < EDGE ? "w" : (x >= size[0] - EDGE ? "e" : "");
-    // Vertical first: the corners come out as nw/ne/sw/se, the names the cursor rules use.
-    return vertical + horizontal;
-  }
-  // The cursor has to beat whatever the page sets on the element under the pointer, so it goes
-  // through a class on <html> plus an !important rule: an inherited cursor loses to any element
-  // that declares its own, which is why the edge only reacted where the page did not.
   var cursorStyle = null;
   function ensureCursorStyle() {
     if (cursorStyle || !document.head) { return; }
@@ -237,41 +220,24 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
       "html.tb-nesw,html.tb-nesw *{cursor:nesw-resize !important}";
     document.head.appendChild(cursorStyle);
   }
-  function setEdgeCursor(edge) {
+  function setEdgeClass(edge) {
     var root = document.documentElement;
     var rest = root.className.replace(/\btb-(ns|ew|nwse|nesw)\b/g, "").replace(/\s+/g, " ").trim();
-    if (!edge) {
-      root.className = rest;
-      return;
-    }
+    if (!edge) { root.className = rest; return; }
     ensureCursorStyle();
     var shape = (edge === "n" || edge === "s") ? "tb-ns" : (edge === "w" || edge === "e") ? "tb-ew"
               : (edge === "nw" || edge === "se") ? "tb-nwse" : "tb-nesw";
     root.className = (rest ? rest + " " : "") + shape;
   }
   document.addEventListener("mousemove", function (e) {
-    setEdgeCursor(edgeAt(e.clientX, e.clientY));
+    var size = window.__tinybrowserSize || [window.innerWidth, window.innerHeight];
+    var x = e.clientX * size[0] / window.innerWidth;
+    var y = e.clientY * size[1] / window.innerHeight;
+    var vertical = y < EDGE ? "n" : (y >= size[1] - EDGE ? "s" : "");
+    var horizontal = x < EDGE ? "w" : (x >= size[0] - EDGE ? "e" : "");
+    setEdgeClass(vertical + horizontal);
   }, true);
-  document.addEventListener("mouseleave", function () { setEdgeCursor(""); }, true);
-  document.addEventListener("mousedown", function (e) {
-    if (e.button !== 0 || e.altKey) { return; }
-    var edge = edgeAt(e.clientX, e.clientY);
-    if (!edge) { return; }
-    e.preventDefault();
-    e.stopPropagation();
-    var startX = e.screenX, startY = e.screenY;
-    post("D" + edge);
-    function move(ev) {
-      post("Z" + (ev.screenX - startX) + "," + (ev.screenY - startY));
-    }
-    function stop() {
-      document.removeEventListener("mousemove", move, true);
-      document.removeEventListener("mouseup", stop, true);
-      post("U");
-    }
-    document.addEventListener("mousemove", move, true);
-    document.addEventListener("mouseup", stop, true);
-  }, true);
+  document.addEventListener("mouseleave", function () { setEdgeClass(""); }, true);
 })();)JS";
 
 std::wstring Trim(const std::wstring& text) {
@@ -354,6 +320,9 @@ std::wstring UserDataFolder() {
   return folder;
 }
 
+void ResizeIfCanonical(int width, int height);  // defined with the placement helpers below
+void PublishWindowSize();  // tells the page the physical size, for its edge cursor
+
 // Ctrl+wheel zoom is a feature on a page and a nuisance on the bar: it would shrink the bar's
 // own controls by hand, which is exactly what we just stopped the fit from doing.
 void SetPageZoomControl(bool enabled) {
@@ -386,6 +355,7 @@ void ShowBar() {
   }
   g_showingBar = true;
   ResetFit();
+  ResizeIfCanonical(kBarWidth, kBarHeight);
   if (g_controller) {
     g_controller->put_ZoomFactor(1.0);  // the bar page is sized for the raw window
   }
@@ -405,6 +375,7 @@ void Navigate(const std::wstring& target) {
   g_showingBar = false;
   ResetFit();
   SetPageZoomControl(true);
+  ResizeIfCanonical(kWidth, kHeight);  // a page needs the room
   g_webview->Navigate(url.c_str());
 }
 
@@ -535,6 +506,176 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
   return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
+
+
+// How close to the window's own edge counts as grabbing it, in physical pixels.
+constexpr int kEdge = 4;
+
+bool InsideWindow(POINT point) {
+  RECT rect = {};
+  if (!g_window || !GetWindowRect(g_window, &rect)) {
+    return false;
+  }
+  return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
+}
+
+int EdgesAt(POINT point) {
+  RECT rect = {};
+  if (!InsideWindow(point) || !GetWindowRect(g_window, &rect)) {
+    return 0;
+  }
+  int edges = 0;
+  if (point.y - rect.top < kEdge) edges |= 1;        // north
+  if (rect.bottom - point.y <= kEdge) edges |= 2;    // south
+  if (point.x - rect.left < kEdge) edges |= 4;       // west
+  if (rect.right - point.x <= kEdge) edges |= 8;     // east
+  return edges;
+}
+
+void EdgeChars(int edges) {
+  g_resizeEdge[0] = 0;
+  g_resizeEdge[1] = 0;
+  g_resizeEdge[2] = 0;
+  int at = 0;
+  if (edges & 1) g_resizeEdge[at++] = L'n';
+  if (edges & 2) g_resizeEdge[at++] = L's';
+  if (edges & 4) g_resizeEdge[at++] = L'w';
+  if (edges & 8) g_resizeEdge[at++] = L'e';
+}
+
+
+// Keeps the window wholly inside the work area (the desktop minus the taskbar). The window lives
+// in a corner by default, so growing or moving past an edge happened invisibly off-screen and read
+// as "the resize does nothing"; it also means the window can never be dragged out of reach.
+void ClampToWorkArea(int* left, int* top, int* right, int* bottom) {
+  RECT work = {};
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    return;
+  }
+  const int width = *right - *left;
+  const int height = *bottom - *top;
+  if (*right > work.right) {
+    *right = work.right;
+    *left = *right - width;
+  }
+  if (*bottom > work.bottom) {
+    *bottom = work.bottom;
+    *top = *bottom - height;
+  }
+  if (*left < work.left) {
+    *left = work.left;
+    *right = *left + width;
+  }
+  if (*top < work.top) {
+    *top = work.top;
+    *bottom = *top + height;
+  }
+}
+
+void ResizeTo(POINT point) {
+  const int dx = point.x - g_dragStart.x;
+  const int dy = point.y - g_dragStart.y;
+  int left = g_resizeAnchor.left;
+  int top = g_resizeAnchor.top;
+  int right = g_resizeAnchor.right;
+  int bottom = g_resizeAnchor.bottom;
+  if (std::wcschr(g_resizeEdge, L'e')) right += dx;
+  if (std::wcschr(g_resizeEdge, L'w')) left += dx;
+  if (std::wcschr(g_resizeEdge, L's')) bottom += dy;
+  if (std::wcschr(g_resizeEdge, L'n')) top += dy;
+  // A dragged edge stops at the work area and the opposite edge does not move: growing past the
+  // desktop (the window sits in a corner, and the taskbar hides the bottom strip) showed no change
+  // on screen, which read as the resize doing nothing.
+  RECT work = {};
+  if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    if (std::wcschr(g_resizeEdge, L'e') && right > work.right) right = work.right;
+    if (std::wcschr(g_resizeEdge, L's') && bottom > work.bottom) bottom = work.bottom;
+    if (std::wcschr(g_resizeEdge, L'w') && left < work.left) left = work.left;
+    if (std::wcschr(g_resizeEdge, L'n') && top < work.top) top = work.top;
+  }
+  int width = right - left;
+  int height = bottom - top;
+  // At the minimum the dragged edge stops while the opposite one stays where it was.
+  if (width < kMinWidth) {
+    width = kMinWidth;
+    if (std::wcschr(g_resizeEdge, L'w')) {
+      left = right - width;
+    }
+  }
+  if (height < kMinHeight) {
+    height = kMinHeight;
+    if (std::wcschr(g_resizeEdge, L'n')) {
+      top = bottom - height;
+    }
+  }
+  SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void MoveTo(POINT point) {
+  int left = g_resizeAnchor.left + (point.x - g_dragStart.x);
+  int top = g_resizeAnchor.top + (point.y - g_dragStart.y);
+  int right = left + (g_resizeAnchor.right - g_resizeAnchor.left);
+  int bottom = top + (g_resizeAnchor.bottom - g_resizeAnchor.top);
+  ClampToWorkArea(&left, &top, &right, &bottom);
+  SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// The hook sees the mouse before the engine's scrollbars do, and swallowing an event here is what
+// makes the strip behave like a window border instead of like a page: the press never reaches the
+// scrollbar, and during a drag nothing else on the system reacts.
+LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
+  if (code == HC_ACTION && g_window) {
+    const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
+    const POINT point = mouse->pt;
+    if (wparam == WM_MOUSEMOVE) {
+      if (g_dragActive) {
+        if (g_dragMoves) {
+          MoveTo(point);
+        } else {
+          ResizeTo(point);
+        }
+        // The move is passed on instead of being swallowed: swallowing it stopped the system from
+        // moving the cursor at all, so the pointer froze at the press while the window chased
+        // coordinates the user could not see. Only the press has to be swallowed (that is what
+        // keeps the scrollbar from taking it); the moves belong to the system.
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+      // Hover moves are left alone on purpose: the page puts the edge cursor there through CSS,
+      // and swallowing them would leave it with no hover at all.
+      return CallNextHookEx(nullptr, code, wparam, lparam);
+    }
+    if (wparam == WM_LBUTTONDOWN) {
+      const int edges = EdgesAt(point);
+      // Alt moves the window from ANYWHERE in it -- that is what the README promises -- so with Alt
+      // held the edges are not consulted at all. Treating an Alt press on an edge as a resize made
+      // the window obey the wrong gesture and snap back when the size hit its minimum.
+      // The keyboard is asked live: a key-up can be missed (a hook the system drops, a release that
+      // never arrives) and a remembered flag would then stick, turning every press into a move and
+      // leaving the window with no way to be resized.
+      const bool altDown = GetAsyncKeyState(VK_LMENU) < 0 || GetAsyncKeyState(VK_RMENU) < 0;
+      const bool moves = altDown && InsideWindow(point);
+      if (!edges && !moves) {
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+      if (!GetWindowRect(g_window, &g_resizeAnchor)) {
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+      g_dragStart = point;
+      g_dragActive = true;
+      g_dragMoves = moves;
+      EdgeChars(moves ? 0 : edges);
+      return 1;  // the scrollbar never sees this press
+    }
+    if (wparam == WM_LBUTTONUP && g_dragActive) {
+      g_dragActive = false;
+      g_dragMoves = false;
+      g_resizeEdge[0] = 0;
+      return 1;
+    }
+  }
+  return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
 void MoveBy(long dx, long dy) {
   if ((dx == 0 && dy == 0) || !g_window) {
     return;
@@ -543,8 +684,12 @@ void MoveBy(long dx, long dy) {
   if (!GetWindowRect(g_window, &rect)) {
     return;
   }
-  SetWindowPos(g_window, nullptr, rect.left + (int)dx, rect.top + (int)dy, 0, 0,
-               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  int left = rect.left + (int)dx;
+  int top = rect.top + (int)dy;
+  int right = left + (rect.right - rect.left);
+  int bottom = top + (rect.bottom - rect.top);
+  ClampToWorkArea(&left, &top, &right, &bottom);
+  SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void OnBarCommand(const std::wstring& message) {
@@ -569,51 +714,6 @@ void OnBarCommand(const std::wstring& message) {
       MoveBy(dx, dy);
       break;
     }
-    case L'D': {  // start of a resize: the edge being dragged, and the rect we start from
-      const std::wstring edge = message.substr(1, 2);
-      g_resizeEdge[0] = edge.empty() ? 0 : edge[0];
-      g_resizeEdge[1] = edge.size() > 1 ? edge[1] : 0;
-      g_resizeEdge[2] = 0;
-      GetWindowRect(g_window, &g_resizeAnchor);
-      break;
-    }
-    case L'U':  // end of the resize
-      g_resizeEdge[0] = 0;
-      break;
-    case L'Z': {  // Z + dx,dy: how far the pointer moved since the drag started
-      if (!g_resizeEdge[0]) {
-        break;
-      }
-      const wchar_t* rest = message.c_str() + 1;
-      wchar_t* end = nullptr;
-      const long dx = std::wcstol(rest, &end, 10);
-      const long dy = (end && *end == L',') ? std::wcstol(end + 1, nullptr, 10) : 0;
-      int left = g_resizeAnchor.left;
-      int top = g_resizeAnchor.top;
-      int right = g_resizeAnchor.right;
-      int bottom = g_resizeAnchor.bottom;
-      if (std::wcschr(g_resizeEdge, L'e')) right += (int)dx;
-      if (std::wcschr(g_resizeEdge, L'w')) left += (int)dx;
-      if (std::wcschr(g_resizeEdge, L's')) bottom += (int)dy;
-      if (std::wcschr(g_resizeEdge, L'n')) top += (int)dy;
-      int width = right - left;
-      int height = bottom - top;
-      // At the minimum the dragged edge stops while the opposite one stays where it was.
-      if (width < kMinWidth) {
-        width = kMinWidth;
-        if (std::wcschr(g_resizeEdge, L'w')) {
-          left = right - width;
-        }
-      }
-      if (height < kMinHeight) {
-        height = kMinHeight;
-        if (std::wcschr(g_resizeEdge, L'n')) {
-          top = bottom - height;
-        }
-      }
-      SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
-      break;
-    }
     default: break;
   }
 }
@@ -627,16 +727,19 @@ constexpr UINT kFitDelayFirst = 250;
 constexpr UINT kFitDelayNext = 1200;
 
 void ApplyFitZoom() {
-  if (g_showingBar || g_widestSeen <= kWidth || !g_controller) {
+  RECT client = {};
+  const int target = (g_window && GetClientRect(g_window, &client)) ? (int)(client.right - client.left)
+                                                                   : kWidth;
+  if (g_showingBar || g_widestSeen <= target || !g_controller) {
     return;
   }
-  double zoom = (double)kWidth / (double)g_widestSeen;
+  double zoom = (double)target / (double)g_widestSeen;
   int ppem = 0;
   int fontHundredths = 0;
   if (kCrispText && g_bodyFont > 1.0) {
     // The largest whole number of physical pixels the body font can occupy and still fit.
     fontHundredths = (int)(g_bodyFont * 100.0 + 0.5);
-    ppem = (int)((double)kWidth * g_bodyFont / (double)g_widestSeen);
+    ppem = (int)((double)target * g_bodyFont / (double)g_widestSeen);
     if (ppem >= 1) {
       zoom = (double)ppem / g_bodyFont;
     } else {
@@ -710,13 +813,25 @@ void FitPageWidth() {
           .Get());
 }
 
+// The page cannot measure the window on its own (the fitted layout is 746 CSS px wide inside 160
+// physical), so it is told the size it is living in and uses that for the edge cursor.
+void PublishWindowSize() {
+  if (!g_webview) {
+    return;
+  }
+  RECT client = {};
+  GetClientRect(g_window, &client);
+  wchar_t script[96] = {};
+  wsprintfW(script, L"window.__tinybrowserSize=[%d,%d];", (int)(client.right - client.left),
+            (int)(client.bottom - client.top));
+  g_webview->ExecuteScript(script, nullptr);
+}
+
 void ResetFit() {
   g_fitPass = 0;
   g_widestSeen = 0;
   g_bodyFont = 0.0;
 }
-
-void PublishWindowSize();  // defined below, next to FitAndPlace
 
 void StartFit() {
   // The bar is laid out for the raw window: fitting it would scale its own controls along with
@@ -725,7 +840,7 @@ void StartFit() {
     return;
   }
   ResetFit();
-  PublishWindowSize();  // the page needs it: its own idea of the window is the layout width
+  PublishWindowSize();  // the page's edge cursor needs the size it is living in
   SetTimer(g_window, kFitTimer, kFitDelayFirst, nullptr);
 }
 void OnFitTimer() {
@@ -736,14 +851,57 @@ void OnFitTimer() {
 }
 
 // Bottom right of the desktop, above the taskbar: the work area is what the shell leaves free.
-void DefaultPlacement(int* x, int* y) {
+void DefaultPlacement(int width, int height, int* x, int* y) {
   RECT work = {};
   if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
     work.right = GetSystemMetrics(SM_CXSCREEN);
     work.bottom = GetSystemMetrics(SM_CYSCREEN);
   }
-  *x = work.right - kWidth - kMargin;
-  *y = work.bottom - kHeight - kMargin;
+  *x = work.right - width - kMargin;
+  *y = work.bottom - height - kMargin;
+}
+
+// The window lives at one of two sizes: the bar's and the page's. A window the user resized by
+// hand matches neither, and is left alone, so switching between the two never undoes a manual
+// resize.
+void ResizeIfCanonical(int width, int height) {
+  if (!g_window) {
+    return;
+  }
+  RECT rect = {};
+  if (!GetWindowRect(g_window, &rect)) {
+    return;
+  }
+  const int currentWidth = rect.right - rect.left;
+  const int currentHeight = rect.bottom - rect.top;
+  const bool canonical = (currentWidth == kBarWidth && currentHeight == kBarHeight) ||
+                         (currentWidth == kWidth && currentHeight == kHeight);
+  if (!canonical || (currentWidth == width && currentHeight == height)) {
+    return;
+  }
+  // Keep it on the desktop: growing from the bar towards the corner would leave it off screen.
+  RECT work = {};
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    work.left = 0;
+    work.top = 0;
+    work.right = GetSystemMetrics(SM_CXSCREEN);
+    work.bottom = GetSystemMetrics(SM_CYSCREEN);
+  }
+  int left = rect.left;
+  int top = rect.top;
+  if (left + width > work.right) {
+    left = work.right - width;
+  }
+  if (top + height > work.bottom) {
+    top = work.bottom - height;
+  }
+  if (left < work.left) {
+    left = work.left;
+  }
+  if (top < work.top) {
+    top = work.top;
+  }
+  SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void FitAndPlace() {
@@ -753,10 +911,15 @@ void FitAndPlace() {
                  SWP_NOZORDER | SWP_NOACTIVATE);
     return;
   }
+  // The window is created at the right size: this only re-states its corner.
+  RECT rect = {};
+  GetWindowRect(g_window, &rect);
+  const int width = rect.right - rect.left;
+  const int height = rect.bottom - rect.top;
   int x = 0;
   int y = 0;
-  DefaultPlacement(&x, &y);
-  SetWindowPos(g_window, nullptr, x, y, kWidth, kHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+  DefaultPlacement(width, height, &x, &y);
+  SetWindowPos(g_window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // A duplicate opens the same page beside this one: same size, shifted a bit so it is visible.
@@ -791,19 +954,6 @@ void DuplicateInNewInstance() {
   ShellExecuteW(nullptr, L"open", exe, arguments, nullptr, SW_SHOWNORMAL);
 }
 
-// The page cannot measure the window on its own (the fitted layout is 746 CSS px wide inside 160
-// physical), so it is told the size it is living in, and the edge detection uses that.
-void PublishWindowSize() {
-  if (!g_webview) {
-    return;
-  }
-  RECT client = {};
-  GetClientRect(g_window, &client);
-  wchar_t script[96] = {};
-  wsprintfW(script, L"window.__tinybrowserSize=[%d,%d];", (int)(client.right - client.left),
-            (int)(client.bottom - client.top));
-  g_webview->ExecuteScript(script, nullptr);
-}
 
 void ReportMissingRuntime() {
   const std::wstring bootstrapper = std::wstring(L".\\") + kBootstrapperName;
@@ -870,6 +1020,17 @@ void CreateWebView() {
                       GetClientRect(g_window, &bounds);
                       g_controller->put_Bounds(bounds);
                       g_controller->put_IsVisible(TRUE);
+                      // The engine paints its own background before the content catches up, and by
+                      // default that is white: growing the window showed a pale strip on the freshly
+                      // exposed edge. Same colour as the window, so a resize looks even.
+                      ICoreWebView2Controller2* controller2 = nullptr;
+                      if (SUCCEEDED(g_controller->QueryInterface(__uuidof(ICoreWebView2Controller2),
+                                                                 reinterpret_cast<void**>(&controller2))) &&
+                          controller2) {
+                        const COREWEBVIEW2_COLOR background = {255, 15, 20, 27};
+                        controller2->put_DefaultBackgroundColor(background);
+                        controller2->Release();
+                      }
                       // The engine has to be told, because the window's own focus notice arrives
                       // before the controller exists: without this the address field is drawn
                       // focused but the keystrokes go nowhere until you click the window.
@@ -957,11 +1118,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         RECT bounds = {};
         GetClientRect(window, &bounds);
         g_controller->put_Bounds(bounds);
-        // The page is fitted to the width, so a new width means a new fit: back to 1:1 and let
-        // the measurement zoom in again only if the content is wider than the window now is.
-        g_controller->put_ZoomFactor(1.0);
-        StartFit();
-        PublishWindowSize();
+        // Re-fitting on every step of a drag re-zooms and re-measures the page at each pixel, which
+        // makes the resize crawl and re-rasterise constantly. Wait for the drag to settle instead:
+        // until then the page keeps the zoom it already had.
+        SetTimer(window, kResizeTimer, kResizeSettle, nullptr);
       }
       return 0;
     }
@@ -969,6 +1129,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (wparam == kFitTimer) {
         KillTimer(window, kFitTimer);
         OnFitTimer();
+      } else if (wparam == kResizeTimer) {
+        KillTimer(window, kResizeTimer);
+        if (g_controller) {
+          PublishWindowSize();  // the edge cursor needs the size, and only now is it settled
+          // No zoom reset here: the page is measured in CSS pixels, which do not depend on the
+          // zoom factor, so a reset only made the content jump to 1:1 and back on every settle.
+          StartFit();
+        }
       }
       return 0;
     case kHotkeyMessage:
@@ -988,6 +1156,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (g_keyboardHook) {
         UnhookWindowsHookEx(g_keyboardHook);
         g_keyboardHook = nullptr;
+      }
+      if (g_mouseHook) {
+        UnhookWindowsHookEx(g_mouseHook);
+        g_mouseHook = nullptr;
       }
       PostQuitMessage(0);
       return 0;
@@ -1045,17 +1217,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     return 1;
   }
 
+  const bool startsOnPage = !g_startTarget.empty();
   int x = 0;
   int y = 0;
-  int width = kWidth;
-  int height = kHeight;
+  int width = startsOnPage ? kWidth : kBarWidth;
+  int height = startsOnPage ? kHeight : kBarHeight;
   if (g_hasPlacedRect) {
     x = g_placedRect.left;
     y = g_placedRect.top;
     width = g_placedRect.right - g_placedRect.left;
     height = g_placedRect.bottom - g_placedRect.top;
   } else {
-    DefaultPlacement(&x, &y);
+    DefaultPlacement(width, height, &x, &y);
   }
   g_window = CreateWindowExW(
       WS_EX_TOPMOST, kWindowClass, kTitle, WS_POPUP,
@@ -1070,8 +1243,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   SendMessageW(g_window, WM_SETICON, ICON_BIG, (LPARAM)iconBig);
   SendMessageW(g_window, WM_SETICON, ICON_SMALL, (LPARAM)iconSmall);
 
-  // The hook has to be installed on the thread that runs the message loop.
+  // Both hooks have to be installed on the thread that runs the message loop.
   g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboard, GetModuleHandleW(nullptr), 0);
+  g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouse, GetModuleHandleW(nullptr), 0);
 
   ShowWindow(g_window, showCommand);
   FitAndPlace();
@@ -1090,6 +1264,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (g_keyboardHook) {
     UnhookWindowsHookEx(g_keyboardHook);
     g_keyboardHook = nullptr;
+  }
+  if (g_mouseHook) {
+    UnhookWindowsHookEx(g_mouseHook);
+    g_mouseHook = nullptr;
   }
 
   CoUninitialize();

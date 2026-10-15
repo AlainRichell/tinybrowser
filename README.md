@@ -11,7 +11,9 @@ se copia a cualquier PC con Windows y anda.
 
 ## Usar
 
-- Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima.
+- Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima, con
+  el tamaño de la barra: **141x77**, el que hace que la lupa caiga justo encima del botón de cerrar
+  y que la marca tenga el mismo aire arriba que abajo (medido: 0,0 px y 4 px contra 4 px).
 - También acepta una dirección: `tinybrowser.exe es.wikipedia.org` (sirve para accesos directos).
 - Escribís la dirección y Enter. Sin puntos = búsqueda en Google. Al abrir, el cursor ya está en
   el campo: escribís directo, sin cliquear.
@@ -23,8 +25,11 @@ se copia a cualquier PC con Windows y anda.
 - El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
   La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
 - Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
-  puntero cambia a las flechas de redimensionar. El mínimo es **60x60** y siempre abre en **160x90**,
-  en la misma esquina de la pantalla. Al cambiar el ancho, la página se vuelve a ajustar sola.
+  puntero cambia a las flechas de redimensionar (salvo justo encima de un scrollbar, donde el motor
+  no le pasa el mouse a la página: ahí el borde redimensiona igual, pero el puntero no cambia). El mínimo es **60x60**. Al navegar la ventana pasa
+  al tamaño de página, **160x90**, que es lo que una página necesita para leerse, y vuelve al de la
+  barra cuando la mostrás. Si la redimensionaste a mano, esos cambios no la tocan. Al cambiar el
+  ancho, la página se ajusta sola.
 - Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
   (incluso encima de una página cargada).
 - Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra. Recargar y atrás
