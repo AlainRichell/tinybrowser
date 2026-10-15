@@ -354,6 +354,19 @@ std::wstring UserDataFolder() {
   return folder;
 }
 
+// Ctrl+wheel zoom is a feature on a page and a nuisance on the bar: it would shrink the bar's
+// own controls by hand, which is exactly what we just stopped the fit from doing.
+void SetPageZoomControl(bool enabled) {
+  if (!g_webview) {
+    return;
+  }
+  ICoreWebView2Settings* settings = nullptr;
+  if (SUCCEEDED(g_webview->get_Settings(&settings)) && settings) {
+    settings->put_IsZoomControlEnabled(enabled ? TRUE : FALSE);
+    settings->Release();
+  }
+}
+
 void ShowBar() {
   if (!g_webview) {
     return;
@@ -366,16 +379,17 @@ void ShowBar() {
   // Nothing to go back to, reload or duplicate until a page has been loaded: those buttons say so
   // instead of doing nothing or, worse, reloading the bar itself into a blank window.
   const std::wstring disabled = g_url.empty() ? L" disabled" : L"";
-  for (size_t at = html.find(L"%DISABLED%"); at != std::wstring::npos;
-       at = html.find(L"%DISABLED%", at)) {
-    html.replace(at, 10, disabled);
-    at += disabled.size();  // every button has its own placeholder, not just the first
+  for (size_t slot = html.find(L"%DISABLED%"); slot != std::wstring::npos;
+       slot = html.find(L"%DISABLED%", slot)) {
+    html.replace(slot, 10, disabled);
+    slot += disabled.size();  // every button has its own placeholder, not just the first
   }
   g_showingBar = true;
   ResetFit();
   if (g_controller) {
     g_controller->put_ZoomFactor(1.0);  // the bar page is sized for the raw window
   }
+  SetPageZoomControl(false);
   g_webview->NavigateToString(html.c_str());
 }
 
@@ -390,6 +404,7 @@ void Navigate(const std::wstring& target) {
   g_url = url;
   g_showingBar = false;
   ResetFit();
+  SetPageZoomControl(true);
   g_webview->Navigate(url.c_str());
 }
 
@@ -634,7 +649,7 @@ void LogFit(int widest, int fontHundredths, int zoomPermille, int ppem) {
 }
 
 void ApplyFitZoom() {
-  if (g_widestSeen <= kWidth || !g_controller) {
+  if (g_showingBar || g_widestSeen <= kWidth || !g_controller) {
     return;
   }
   double zoom = (double)kWidth / (double)g_widestSeen;
@@ -662,7 +677,7 @@ void ApplyFitZoom() {
 // a 160 px window while its own scrollWidth stays at the viewport width, and its wide filter
 // strip lives in a scrolling container that must not force everything to shrink.
 void FitPageWidth() {
-  if (!g_webview) {
+  if (!g_webview || g_showingBar) {
     return;
   }
   g_webview->ExecuteScript(
@@ -724,6 +739,11 @@ void ResetFit() {
 void PublishWindowSize();  // defined below, next to FitAndPlace
 
 void StartFit() {
+  // The bar is laid out for the raw window: fitting it would scale its own controls along with
+  // the name of the field, which is not what a browser chrome should do when it grows.
+  if (g_showingBar) {
+    return;
+  }
   ResetFit();
   PublishWindowSize();  // the page needs it: its own idea of the window is the layout width
   SetTimer(g_window, kFitTimer, kFitDelayFirst, nullptr);
