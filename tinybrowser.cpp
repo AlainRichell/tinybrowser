@@ -28,11 +28,24 @@ namespace {
 
 constexpr int  kWidth = 160;
 constexpr int  kHeight = 90;
+constexpr int  kMinWidth = 60;   // the window can be resized down to this and no further
+constexpr int  kMinHeight = 60;
 constexpr int  kMargin = 24;
 constexpr int  kTopOffset = 48;
 constexpr UINT_PTR kFitTimer = 1;      // one-shot: measure the page after it settles
 constexpr double kMinZoom = 0.10;
 constexpr double kMaxZoom = 1.0;
+
+// Crisp route: the page is drawn one to one into screen pixels, with grey antialiasing
+// instead of ClearType fringes, and the zoom is picked so the site's font lands on a whole
+// number of physical pixels. A fractional ppem is what leaves the rasterizer unable to fit
+// stems to the pixel grid, and a 160 px wide window is exactly where that shows.
+constexpr bool kCrispText = true;
+constexpr wchar_t kCrispArgs[] = L"--disable-lcd-text --font-render-hinting=full";
+// WebView2 reads extra browser arguments from this variable in the host process, which is
+// cheaper and less fragile than handing it a custom ICoreWebView2EnvironmentOptions.
+constexpr wchar_t kCrispArgsVar[] = L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+constexpr bool kDebugFit = true;  // appends each fit decision to diag.log in the profile folder
 constexpr UINT kHotkeyBar = 1;   // Ctrl+Alt+L
 constexpr UINT kHotkeyQuit = 2;  // Ctrl+Alt+Q
 
@@ -48,10 +61,16 @@ HWND g_window = nullptr;
 HHOOK g_keyboardHook = nullptr;
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
+// Resizing is driven from inside the page (see kPageScript): the window that really receives the
+// mouse is the engine's render widget, and it belongs to the browser process, so no in-process
+// subclass can ever see those clicks.
 std::wstring g_url;
 std::wstring g_startTarget;  // URL given on the command line, if any
+wchar_t g_resizeEdge[3] = {};  // edges being dragged ("", "n", "se", ...), empty when idle
+RECT g_resizeAnchor = {};      // window rectangle the drag started from
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
+double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
 
 void ResetFit();  // defined next to the fit helpers below
 
@@ -154,6 +173,52 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
     function stop() {
       document.removeEventListener("mousemove", move, true);
       document.removeEventListener("mouseup", stop, true);
+    }
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", stop, true);
+  }, true);
+
+  // The window has no border and the engine's input window belongs to another process, so the
+  // edges are found by coordinates: near an edge the pointer changes, and pressing there starts
+  // a resize session. Only the edge and the screen deltas are sent; the host owns the geometry.
+  var EDGE = 4;
+  function windowSize() {
+    var size = window.__tinybrowserSize;
+    return (size && size.length === 2) ? size : [window.innerWidth, window.innerHeight];
+  }
+  function edgeAt(clientX, clientY) {
+    var size = windowSize();
+    var x = clientX * size[0] / window.innerWidth;
+    var y = clientY * size[1] / window.innerHeight;
+    var vertical = y < EDGE ? "n" : (y >= size[1] - EDGE ? "s" : "");
+    var horizontal = x < EDGE ? "w" : (x >= size[0] - EDGE ? "e" : "");
+    return horizontal + vertical;
+  }
+  function cursorFor(edge) {
+    if (edge === "n" || edge === "s") { return "ns-resize"; }
+    if (edge === "w" || edge === "e") { return "ew-resize"; }
+    if (edge === "nw" || edge === "se") { return "nwse-resize"; }
+    return "nesw-resize";
+  }
+  document.addEventListener("mousemove", function (e) {
+    var edge = edgeAt(e.clientX, e.clientY);
+    document.documentElement.style.cursor = edge ? cursorFor(edge) : "";
+  }, true);
+  document.addEventListener("mousedown", function (e) {
+    if (e.button !== 0 || e.altKey) { return; }
+    var edge = edgeAt(e.clientX, e.clientY);
+    if (!edge) { return; }
+    e.preventDefault();
+    e.stopPropagation();
+    var startX = e.screenX, startY = e.screenY;
+    post("D" + edge);
+    function move(ev) {
+      post("Z" + (ev.screenX - startX) + "," + (ev.screenY - startY));
+    }
+    function stop() {
+      document.removeEventListener("mousemove", move, true);
+      document.removeEventListener("mouseup", stop, true);
+      post("U");
     }
     document.addEventListener("mousemove", move, true);
     document.addEventListener("mouseup", stop, true);
@@ -372,6 +437,51 @@ void OnBarCommand(const std::wstring& message) {
       MoveBy(dx, dy);
       break;
     }
+    case L'D': {  // start of a resize: the edge being dragged, and the rect we start from
+      const std::wstring edge = message.substr(1, 2);
+      g_resizeEdge[0] = edge.empty() ? 0 : edge[0];
+      g_resizeEdge[1] = edge.size() > 1 ? edge[1] : 0;
+      g_resizeEdge[2] = 0;
+      GetWindowRect(g_window, &g_resizeAnchor);
+      break;
+    }
+    case L'U':  // end of the resize
+      g_resizeEdge[0] = 0;
+      break;
+    case L'Z': {  // Z + dx,dy: how far the pointer moved since the drag started
+      if (!g_resizeEdge[0]) {
+        break;
+      }
+      const wchar_t* rest = message.c_str() + 1;
+      wchar_t* end = nullptr;
+      const long dx = std::wcstol(rest, &end, 10);
+      const long dy = (end && *end == L',') ? std::wcstol(end + 1, nullptr, 10) : 0;
+      int left = g_resizeAnchor.left;
+      int top = g_resizeAnchor.top;
+      int right = g_resizeAnchor.right;
+      int bottom = g_resizeAnchor.bottom;
+      if (std::wcschr(g_resizeEdge, L'e')) right += (int)dx;
+      if (std::wcschr(g_resizeEdge, L'w')) left += (int)dx;
+      if (std::wcschr(g_resizeEdge, L's')) bottom += (int)dy;
+      if (std::wcschr(g_resizeEdge, L'n')) top += (int)dy;
+      int width = right - left;
+      int height = bottom - top;
+      // At the minimum the dragged edge stops while the opposite one stays where it was.
+      if (width < kMinWidth) {
+        width = kMinWidth;
+        if (std::wcschr(g_resizeEdge, L'w')) {
+          left = right - width;
+        }
+      }
+      if (height < kMinHeight) {
+        height = kMinHeight;
+        if (std::wcschr(g_resizeEdge, L'n')) {
+          top = bottom - height;
+        }
+      }
+      SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+      break;
+    }
     default: break;
   }
 }
@@ -384,13 +494,50 @@ constexpr int kFitPasses = 3;
 constexpr UINT kFitDelayFirst = 250;
 constexpr UINT kFitDelayNext = 1200;
 
+void LogLine(const std::wstring& text) {
+  // Hand-rolled on purpose: wsprintfW and WriteFile cost nothing extra (user32 and kernel32 are
+  // already linked), while anything out of <cstdio> drags in tens of KB of formatting engine.
+  const std::wstring path = UserDataFolder() + L"\\diag.log";
+  const HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD written = 0;
+  std::wstring line = text + L"\r\n";
+  WriteFile(file, line.c_str(), (DWORD)line.size() * (DWORD)sizeof(wchar_t), &written, nullptr);
+  CloseHandle(file);
+}
+
+void LogFit(int widest, int fontHundredths, int zoomPermille, int ppem) {
+  wchar_t line[128] = {};
+  wsprintfW(line, L"widest=%d fontHundredths=%d zoomPermille=%d ppem=%d",
+            widest, fontHundredths, zoomPermille, ppem);
+  LogLine(line);
+}
+
 void ApplyFitZoom() {
   if (g_widestSeen <= kWidth || !g_controller) {
     return;
   }
   double zoom = (double)kWidth / (double)g_widestSeen;
+  int ppem = 0;
+  int fontHundredths = 0;
+  if (kCrispText && g_bodyFont > 1.0) {
+    // The largest whole number of physical pixels the body font can occupy and still fit.
+    fontHundredths = (int)(g_bodyFont * 100.0 + 0.5);
+    ppem = (int)((double)kWidth * g_bodyFont / (double)g_widestSeen);
+    if (ppem >= 1) {
+      zoom = (double)ppem / g_bodyFont;
+    } else {
+      ppem = 0;
+    }
+  }
   zoom = zoom < kMinZoom ? kMinZoom : (zoom > kMaxZoom ? kMaxZoom : zoom);
   g_controller->put_ZoomFactor(zoom);
+  if (kDebugFit) {
+    LogFit(g_widestSeen, fontHundredths, (int)(zoom * 1000.0 + 0.5), ppem);
+  }
 }
 
 // Widest content that has to fit: the document scroll widths plus the right edge of every
@@ -417,7 +564,8 @@ void FitPageWidth() {
       L"   var r = el.getBoundingClientRect();"
       L"   if (r.right > max) { max = r.right; }"
       L" }"
-      L" return (d ? d.scrollWidth : 0) + ',' + (b ? b.scrollWidth : 0) + ',' + Math.round(max); })()",
+      L" return (d ? d.scrollWidth : 0) + ',' + (b ? b.scrollWidth : 0) + ',' + Math.round(max) + ','"
+      L"   + (b ? Math.round((parseFloat(getComputedStyle(b).fontSize) || 0) * 100) : 0); })()",
       Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
           [](HRESULT result, LPCWSTR json) -> HRESULT {
             if (FAILED(result) || !json) {
@@ -428,7 +576,11 @@ void FitPageWidth() {
             wchar_t* end = nullptr;
             const int scroll = (int)std::wcstol(start, &end, 10);
             const int body = (end && *end == L',') ? (int)std::wcstol(end + 1, &end, 10) : 0;
-            const int right = (end && *end == L',') ? (int)std::wcstol(end + 1, nullptr, 10) : 0;
+            const int right = (end && *end == L',') ? (int)std::wcstol(end + 1, &end, 10) : 0;
+            const int fontHundredths = (end && *end == L',') ? (int)std::wcstol(end + 1, nullptr, 10) : 0;
+            if (fontHundredths > 100) {  // the page states its body font in hundredths of a px
+              g_bodyFont = fontHundredths / 100.0;
+            }
 
             int width = scroll;
             if (body > width) {
@@ -449,13 +601,16 @@ void FitPageWidth() {
 void ResetFit() {
   g_fitPass = 0;
   g_widestSeen = 0;
+  g_bodyFont = 0.0;
 }
+
+void PublishWindowSize();  // defined below, next to FitAndPlace
 
 void StartFit() {
   ResetFit();
+  PublishWindowSize();  // the page needs it: its own idea of the window is the layout width
   SetTimer(g_window, kFitTimer, kFitDelayFirst, nullptr);
 }
-
 void OnFitTimer() {
   FitPageWidth();
   if (++g_fitPass < kFitPasses) {
@@ -466,6 +621,20 @@ void OnFitTimer() {
 void FitAndPlace() {
   const int x = GetSystemMetrics(SM_CXSCREEN) - kWidth - kMargin;
   SetWindowPos(g_window, nullptr, x, kTopOffset, kWidth, kHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// The page cannot measure the window on its own (the fitted layout is 746 CSS px wide inside 160
+// physical), so it is told the size it is living in, and the edge detection uses that.
+void PublishWindowSize() {
+  if (!g_webview) {
+    return;
+  }
+  RECT client = {};
+  GetClientRect(g_window, &client);
+  wchar_t script[96] = {};
+  wsprintfW(script, L"window.__tinybrowserSize=[%d,%d];", (int)(client.right - client.left),
+            (int)(client.bottom - client.top));
+  g_webview->ExecuteScript(script, nullptr);
 }
 
 void ReportMissingRuntime() {
@@ -489,13 +658,25 @@ void ReportMissingRuntime() {
   }
 }
 
+void ReportFailure(const wchar_t* what, HRESULT result) {
+  wchar_t text[160] = {};
+  wsprintfW(text, L"%s failed: 0x%08X", what, (unsigned)result);
+  LogLine(text);
+}
+
 void CreateWebView() {
   const std::wstring folder = UserDataFolder();
+  if (kCrispText) {
+    // Set before the engine starts: the browser process inherits it and reads the arguments.
+    SetEnvironmentVariableW(kCrispArgsVar, kCrispArgs);
+  }
+  LogLine(kCrispText ? std::wstring(L"args: ") + kCrispArgs : L"args: none");
   const HRESULT started = CreateCoreWebView2EnvironmentWithOptions(
       nullptr, folder.empty() ? nullptr : folder.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
             if (FAILED(result) || !environment) {
+              ReportFailure(L"CreateCoreWebView2EnvironmentWithOptions (callback)", result);
               if (result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
                 ReportMissingRuntime();
               }
@@ -507,6 +688,7 @@ void CreateWebView() {
                 Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                     [](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
                       if (FAILED(controllerResult) || !controller) {
+                        ReportFailure(L"CreateCoreWebView2Controller", controllerResult);
                         PostMessageW(g_window, WM_CLOSE, 0, 0);
                         return S_OK;
                       }
@@ -517,6 +699,7 @@ void CreateWebView() {
                       GetClientRect(g_window, &bounds);
                       g_controller->put_Bounds(bounds);
                       g_controller->put_IsVisible(TRUE);
+                      PublishWindowSize();
 
                       EventRegistrationToken messageToken = {};
                       g_webview->add_WebMessageReceived(
@@ -573,7 +756,14 @@ void CreateWebView() {
           .Get());
 
   if (FAILED(started)) {
-    ReportMissingRuntime();
+    ReportFailure(L"CreateCoreWebView2EnvironmentWithOptions (sync)", started);
+    if (started == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
+      ReportMissingRuntime();  // only this code means the runtime really is absent
+    } else {
+      MessageBoxW(nullptr, L"tinybrowser no pudo iniciar el motor de WebView2.\n"
+                           L"El detalle quedo en diag.log, en la carpeta de datos.",
+                  kTitle, MB_OK | MB_ICONERROR);
+    }
     PostMessageW(g_window, WM_CLOSE, 0, 0);
   }
 }
@@ -585,6 +775,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         RECT bounds = {};
         GetClientRect(window, &bounds);
         g_controller->put_Bounds(bounds);
+        // The page is fitted to the width, so a new width means a new fit: back to 1:1 and let
+        // the measurement zoom in again only if the content is wider than the window now is.
+        g_controller->put_ZoomFactor(1.0);
+        StartFit();
+        PublishWindowSize();
       }
       return 0;
     }
@@ -614,9 +809,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       }
       PostQuitMessage(0);
       return 0;
-    default:
-      return DefWindowProcW(window, message, wparam, lparam);
   }
+  // Anything not handled above, and WM_NCCALCSIZE when wparam is not TRUE, is default work.
+  return DefWindowProcW(window, message, wparam, lparam);
 }
 
 }  // namespace

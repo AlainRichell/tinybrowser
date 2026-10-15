@@ -17,6 +17,9 @@ se copia a cualquier PC con Windows y anda.
 - Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una
   esquina" de la página. `Ctrl` + rueda para acercar a mano.
 - `Ctrl+Alt+L` vuelve a la barra desde cualquier página; `Ctrl+Alt+Q` cierra.
+- Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
+  puntero cambia a las flechas de redimensionar. El mínimo es **60x60** y siempre abre en **160x90**,
+  en la misma esquina de la pantalla. Al cambiar el ancho, la página se vuelve a ajustar sola.
 - Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
   (incluso encima de una página cargada).
 - Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra.
@@ -77,6 +80,35 @@ Tres decisiones que explican el resto:
   (entradas BMP de 4 bits, paleta VGA de 16 colores, 16/32/48 px, 2,7 KB en total) y además un
   pliego con todas las variantes en `tools/preview.png`, para poder comparar y volver atrás sin
   depender de la memoria.
+
+## Nitidez a 160 píxeles
+
+La ventana no dibuja más píxeles de los que tiene, así que lo único que se puede pelear es *cómo*
+se dibujan. Lo que quedó aplicado:
+
+- **Antialias gris** (`--disable-lcd-text`, inyectado por `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`):
+  fuera los flecos rojos y azules del ClearType. Medido en la misma página, en los bordes de letra,
+  el desvío medio de color bajó de **30,15 a 9,98** (y lo que queda son los colores propios del sitio).
+- **Letra en píxeles enteros**: en vez de un zoom continuo, se mide la fuente del cuerpo del sitio y
+  se elige el mayor número entero de píxeles físicos que entra en el ancho, de modo que el zoom sea
+  esa división exacta. Así el rasterizador tiene una rejilla donde encajar los trazos en lugar de
+  trabajar con medidas fraccionarias.
+
+Lo que se probó y **no** funciona, con los números:
+
+- **Renderizar al doble y bajar (supersampling)**: en una ventana de tamaño fijo no hay quién
+  reduzca la superficie, así que subir `RasterizationScale` al doble **recorta** en vez de promediar
+  (la página se ve más grande y cortada a la derecha y abajo). Simulado el proceso completo —render
+  al doble y promedio 2x2, mismo contenido, mismo maquetado y mismo tamaño final— el resultado pierde
+  contraste: la luminancia media de los 200 píxeles más oscuros del texto pasa de **9,1** (casi negro)
+  a **124** (gris medio), y los 160 píxeles negros del render directo desaparecen. Es esperable: al
+  promediar, un trazo de un píxel se reparte entre dos y deja de llegar al negro pleno. Más suave,
+  menos nítido.
+- Queda sin explorar la emulación móvil (que cambia qué maquetado sirve el sitio) y el
+  `--font-render-hinting`, probablemente un no-op en Windows, que rasteriza con DirectWrite.
+
+Todo ajuste que se aplique queda anotado en `diag.log`, en la carpeta de datos, para poder volver a
+medir sin instrumentar el programa otra vez.
 
 ## Estado
 
