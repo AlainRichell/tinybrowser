@@ -91,6 +91,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   input:focus{outline:none;border-color:#4a90c2}
   button{flex:0 0 20px;height:20px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;border-radius:4px}
   button:hover{color:#fff;background:#253141}
+  #go{display:inline-flex;align-items:center;justify-content:center}
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
   button:disabled:hover{color:#46586a;background:#141c26}
   kbd{color:#9db2c6;background:#1a2330;border-radius:3px;padding:0 3px;font:inherit}
@@ -103,7 +104,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #closepanel{font-size:9px;color:#5b6b7d;margin-top:1px}
 </style></head><body>
 <div id="grip" title="drag"></div>
-<div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go">&#9166;</button></div>
+<div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
 <div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="dup" title="Duplicate in another window (Ctrl+Alt+D)"%DISABLED%>&#10697;</button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
 <div id="brand">tinybrowser 2026</div>
 <div id="commands" hidden>
