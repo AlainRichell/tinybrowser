@@ -45,9 +45,10 @@ constexpr wchar_t kCrispArgs[] = L"--disable-lcd-text --font-render-hinting=full
 // cheaper and less fragile than handing it a custom ICoreWebView2EnvironmentOptions.
 constexpr wchar_t kCrispArgsVar[] = L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
 constexpr bool kDebugFit = true;  // appends each fit decision to diag.log in the profile folder
-constexpr UINT kHotkeyBar = 1;   // Ctrl+Alt+L
-constexpr UINT kHotkeyQuit = 2;  // Ctrl+Alt+Q
+constexpr UINT kHotkeyBar = 1;        // Ctrl+Alt+S
+constexpr UINT kHotkeyQuit = 2;       // Ctrl+Alt+X
 constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
+constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
@@ -93,13 +94,27 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   button:hover{color:#fff;background:#253141}
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
   button:disabled:hover{color:#46586a;background:#141c26}
-  #hint{font-size:9px;line-height:1.25;color:#64748b}
   kbd{color:#9db2c6;background:#1a2330;border-radius:3px;padding:0 3px;font:inherit}
+  #brand{position:absolute;right:5px;bottom:2px;font-size:9px;letter-spacing:.3px;color:#33455a}
+  #commands{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:5;padding:4px 6px;
+    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.25;
+    color:#9db2c6;overflow:auto}
+  #commands[hidden]{display:none}
+  #commands .k{display:inline-block;min-width:58px;color:#7fb3d5}
+  #closepanel{font-size:9px;color:#5b6b7d;margin-top:1px}
 </style></head><body>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go">&#9166;</button></div>
-<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="dup" title="Duplicate in another window (Ctrl+Alt+D)"%DISABLED%>&#10697;</button><button id="close" title="Close (Ctrl+Alt+Q)">&#10005;</button></div>
-<div id="hint"><kbd>Ctrl+Alt+L</kbd> barra<br><kbd>+D</kbd> duplicar &middot; <kbd>+Q</kbd> cerrar</div>
+<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="dup" title="Duplicate in another window (Ctrl+Alt+D)"%DISABLED%>&#10697;</button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
+<div id="brand">tinybrowser 2026</div>
+<div id="commands" hidden>
+<div><span class="k">Ctrl+Alt+S</span> barra</div>
+<div><span class="k">Ctrl+Alt+D</span> duplicar</div>
+<div><span class="k">Ctrl+Alt+Z</span> atr&aacute;s</div>
+<div><span class="k">Ctrl+Alt+X</span> cerrar</div>
+<div><span class="k">Alt+arrastrar</span> mover</div>
+<div id="closepanel">clic para cerrar</div>
+</div>
 <script>
 (function () {
   function send(message) { try { window.chrome.webview.postMessage(message); } catch (e) { } }
@@ -116,6 +131,14 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   document.getElementById("reload").onclick = function () { send("R"); };
   document.getElementById("dup").onclick = function () { send("C"); };
   document.getElementById("close").onclick = function () { send("X"); };
+
+  // The command list lives in a panel over the whole bar, so it fits at any window size.
+  var commands = document.getElementById("commands");
+  document.getElementById("help").onclick = function () { send("H"); commands.hidden = !commands.hidden; };
+  commands.onclick = function () { commands.hidden = true; };
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { commands.hidden = true; }
+  }, true);
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
   // start inside the page: the grip reports pixel deltas and the host moves itself.
@@ -159,7 +182,7 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
     if (link && (link.target || "").toLowerCase() === "_blank") { link.target = "_self"; }
   }, true);
   document.addEventListener("keydown", function (e) {
-    if (e.ctrlKey && e.altKey && (e.key === "l" || e.key === "L")) {
+    if (e.ctrlKey && e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
       post("S");
     }
@@ -321,9 +344,11 @@ void ShowBar() {
   }
   // Nothing to go back to, reload or duplicate until a page has been loaded: those buttons say so
   // instead of doing nothing or, worse, reloading the bar itself into a blank window.
-  const size_t disabled = html.find(L"%DISABLED%");
-  if (disabled != std::wstring::npos) {
-    html.replace(disabled, 10, g_url.empty() ? L" disabled" : L"");
+  const std::wstring disabled = g_url.empty() ? L" disabled" : L"";
+  for (size_t at = html.find(L"%DISABLED%"); at != std::wstring::npos;
+       at = html.find(L"%DISABLED%", at)) {
+    html.replace(at, 10, disabled);
+    at += disabled.size();  // every button has its own placeholder, not just the first
   }
   g_showingBar = true;
   ResetFit();
@@ -362,28 +387,34 @@ void HandleHotkey(UINT id) {
     PostMessageW(g_window, WM_CLOSE, 0, 0);
   } else if (id == kHotkeyDuplicate) {
     DuplicateInNewInstance();
+  } else if (id == kHotkeyBack) {
+    if (!g_url.empty()) {
+      RunInPage(L"history.back()");
+    }
   }
 }
 
 // Global shortcuts through a low-level keyboard hook: RegisterHotKey registered fine but
 // never fired for this window, and the hook is what every global-shortcut tool uses.
-// Virtual-key codes for letters are the uppercase character values: 'L' = 0x4C, 'Q' = 0x51.
-// Registering the lowercase values (0x6C / 0x71) is accepted but never matches a keystroke.
+// Virtual-key codes for letters are the uppercase character values: 'S' = 0x53, 'X' = 0x58,
+// 'D' = 0x44, 'Z' = 0x5A. Registering the lowercase values is accepted but never matches.
 constexpr UINT kHotkeyMessage = WM_APP + 1;
-constexpr UINT kHotkeyKeyL = L'L';
-constexpr UINT kHotkeyKeyQ = L'Q';
+constexpr UINT kHotkeyKeyS = L'S';
+constexpr UINT kHotkeyKeyX = L'X';
 constexpr UINT kHotkeyKeyD = L'D';
+constexpr UINT kHotkeyKeyZ = L'Z';
 
 struct HotkeyChord {
   UINT key;
   UINT id;
 };
 constexpr HotkeyChord kHotkeys[] = {
-    {kHotkeyKeyL, kHotkeyBar},
-    {kHotkeyKeyQ, kHotkeyQuit},
+    {kHotkeyKeyS, kHotkeyBar},
+    {kHotkeyKeyX, kHotkeyQuit},
     {kHotkeyKeyD, kHotkeyDuplicate},
+    {kHotkeyKeyZ, kHotkeyBack},
 };
-constexpr int kHotkeyCount = 3;
+constexpr int kHotkeyCount = 4;
 
 bool g_ctrlDown = false;
 bool g_altDown = false;

@@ -6,7 +6,7 @@ Un navegador de escritorio de **160x90 píxeles**: una ventana sin marco, siempr
 tener un sitio a la vista mientras trabajás en otra cosa. No es un visor de una URL fija — le
 escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge embebido.
 
-**203.776 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
+**218.112 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
 ## Usar
@@ -16,7 +16,10 @@ se copia a cualquier PC con Windows y anda.
 - Escribís la dirección y Enter. Sin puntos = búsqueda en Google.
 - Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una
   esquina" de la página. `Ctrl` + rueda para acercar a mano.
-- `Ctrl+Alt+L` vuelve a la barra desde cualquier página; `Ctrl+Alt+Q` cierra.
+- `Ctrl+Alt+S` vuelve a la barra desde cualquier página, `Ctrl+Alt+Z` va atrás, `Ctrl+Alt+D` duplica
+  en otra ventana y `Ctrl+Alt+X` cierra.
+- El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
+  La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
 - Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
   puntero cambia a las flechas de redimensionar. El mínimo es **60x60** y siempre abre en **160x90**,
   en la misma esquina de la pantalla. Al cambiar el ancho, la página se vuelve a ajustar sola.
