@@ -11,7 +11,7 @@ se copia a cualquier PC con Windows y anda.
 
 ## Usar
 
-- Doble clic en `tinybrowser.exe`. Abre pegada a la esquina superior derecha, siempre encima.
+- Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima.
 - También acepta una dirección: `tinybrowser.exe es.wikipedia.org` (sirve para accesos directos).
 - Escribís la dirección y Enter. Sin puntos = búsqueda en Google.
 - Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una

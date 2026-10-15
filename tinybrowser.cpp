@@ -30,8 +30,7 @@ constexpr int  kWidth = 160;
 constexpr int  kHeight = 90;
 constexpr int  kMinWidth = 60;   // the window can be resized down to this and no further
 constexpr int  kMinHeight = 60;
-constexpr int  kMargin = 24;
-constexpr int  kTopOffset = 48;
+constexpr int  kMargin = 24;   // gap to the right and bottom edges of the desktop
 constexpr UINT_PTR kFitTimer = 1;      // one-shot: measure the page after it settles
 constexpr double kMinZoom = 0.10;
 constexpr double kMaxZoom = 1.0;
@@ -618,9 +617,22 @@ void OnFitTimer() {
   }
 }
 
+// Bottom right of the desktop, above the taskbar: the work area is what the shell leaves free.
+void DefaultPlacement(int* x, int* y) {
+  RECT work = {};
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    work.right = GetSystemMetrics(SM_CXSCREEN);
+    work.bottom = GetSystemMetrics(SM_CYSCREEN);
+  }
+  *x = work.right - kWidth - kMargin;
+  *y = work.bottom - kHeight - kMargin;
+}
+
 void FitAndPlace() {
-  const int x = GetSystemMetrics(SM_CXSCREEN) - kWidth - kMargin;
-  SetWindowPos(g_window, nullptr, x, kTopOffset, kWidth, kHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+  int x = 0;
+  int y = 0;
+  DefaultPlacement(&x, &y);
+  SetWindowPos(g_window, nullptr, x, y, kWidth, kHeight, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // The page cannot measure the window on its own (the fitted layout is 746 CSS px wide inside 160
@@ -857,10 +869,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     return 1;
   }
 
-  const int x = GetSystemMetrics(SM_CXSCREEN) - kWidth - kMargin;
+  int x = 0;
+  int y = 0;
+  DefaultPlacement(&x, &y);
   g_window = CreateWindowExW(
       WS_EX_TOPMOST, kWindowClass, kTitle, WS_POPUP,
-      x, kTopOffset, kWidth, kHeight,
+      x, y, kWidth, kHeight,
       nullptr, nullptr, instance, nullptr);
   if (!g_window) {
     return 1;
