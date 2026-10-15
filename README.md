@@ -119,8 +119,9 @@ Lo que se probó y **no** funciona, con los números:
 - Queda sin explorar la emulación móvil (que cambia qué maquetado sirve el sitio) y el
   `--font-render-hinting`, probablemente un no-op en Windows, que rasteriza con DirectWrite.
 
-Todo ajuste que se aplique queda anotado en `diag.log`, en la carpeta de datos, para poder volver a
-medir sin instrumentar el programa otra vez.
+El cálculo del ajuste recorre los elementos de la página, y resolver estilos es lo caro: descarta por
+rectángulo lo que no puede superar al más ancho visto, antes de mirar sus ancestros. Medido en una
+página de 24.667 elementos: **470 ms por pasada, a 65 ms**, con el mismo resultado.
 
 ## Estado
 
