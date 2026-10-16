@@ -559,30 +559,39 @@ void EdgeChars(int edges) {
 }
 
 
-// Keeps the window wholly inside the work area (the desktop minus the taskbar). The window lives
-// in a corner by default, so growing or moving past an edge happened invisibly off-screen and read
-// as "the resize does nothing"; it also means the window can never be dragged out of reach.
-void ClampToWorkArea(int* left, int* top, int* right, int* bottom) {
-  RECT work = {};
-  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
-    return;
-  }
+// The whole desktop, taskbar and any second monitor included. The work area is what the *default*
+// placement uses to open above the taskbar; a move or a resize is not limited by it, because this
+// window is topmost and covering the taskbar is a placement the user asks for.
+void DesktopBounds(RECT* desktop) {
+  const int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  desktop->left = left;
+  desktop->top = top;
+  desktop->right = left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  desktop->bottom = top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+}
+
+// Keeps a moved or dragged rectangle inside the desktop: past the edge it is invisible, which read
+// as "the resize does nothing", and a frameless window has no title bar to pull back.
+void ClampToDesktop(int* left, int* top, int* right, int* bottom) {
+  RECT desktop = {};
+  DesktopBounds(&desktop);
   const int width = *right - *left;
   const int height = *bottom - *top;
-  if (*right > work.right) {
-    *right = work.right;
+  if (*right > desktop.right) {
+    *right = desktop.right;
     *left = *right - width;
   }
-  if (*bottom > work.bottom) {
-    *bottom = work.bottom;
+  if (*bottom > desktop.bottom) {
+    *bottom = desktop.bottom;
     *top = *bottom - height;
   }
-  if (*left < work.left) {
-    *left = work.left;
+  if (*left < desktop.left) {
+    *left = desktop.left;
     *right = *left + width;
   }
-  if (*top < work.top) {
-    *top = work.top;
+  if (*top < desktop.top) {
+    *top = desktop.top;
     *bottom = *top + height;
   }
 }
@@ -598,16 +607,15 @@ void ResizeTo(POINT point) {
   if (std::wcschr(g_resizeEdge, L'w')) left += dx;
   if (std::wcschr(g_resizeEdge, L's')) bottom += dy;
   if (std::wcschr(g_resizeEdge, L'n')) top += dy;
-  // A dragged edge stops at the work area and the opposite edge does not move: growing past the
-  // desktop (the window sits in a corner, and the taskbar hides the bottom strip) showed no change
-  // on screen, which read as the resize doing nothing.
-  RECT work = {};
-  if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
-    if (std::wcschr(g_resizeEdge, L'e') && right > work.right) right = work.right;
-    if (std::wcschr(g_resizeEdge, L's') && bottom > work.bottom) bottom = work.bottom;
-    if (std::wcschr(g_resizeEdge, L'w') && left < work.left) left = work.left;
-    if (std::wcschr(g_resizeEdge, L'n') && top < work.top) top = work.top;
-  }
+  // A dragged edge stops at the desktop edge and the opposite edge does not move: growing past the
+  // screen showed no change on screen, which read as the resize doing nothing. The taskbar is not a
+  // limit -- the window is topmost, so the strip over it is visible.
+  RECT desktop = {};
+  DesktopBounds(&desktop);
+  if (std::wcschr(g_resizeEdge, L'e') && right > desktop.right) right = desktop.right;
+  if (std::wcschr(g_resizeEdge, L's') && bottom > desktop.bottom) bottom = desktop.bottom;
+  if (std::wcschr(g_resizeEdge, L'w') && left < desktop.left) left = desktop.left;
+  if (std::wcschr(g_resizeEdge, L'n') && top < desktop.top) top = desktop.top;
   int width = right - left;
   int height = bottom - top;
   // At the minimum the dragged edge stops while the opposite one stays where it was.
@@ -631,7 +639,7 @@ void MoveTo(POINT point) {
   int top = g_resizeAnchor.top + (point.y - g_dragStart.y);
   int right = left + (g_resizeAnchor.right - g_resizeAnchor.left);
   int bottom = top + (g_resizeAnchor.bottom - g_resizeAnchor.top);
-  ClampToWorkArea(&left, &top, &right, &bottom);
+  ClampToDesktop(&left, &top, &right, &bottom);
   SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -710,7 +718,7 @@ void MoveBy(long dx, long dy) {
   int top = rect.top + (int)dy;
   int right = left + (rect.right - rect.left);
   int bottom = top + (rect.bottom - rect.top);
-  ClampToWorkArea(&left, &top, &right, &bottom);
+  ClampToDesktop(&left, &top, &right, &bottom);
   SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -912,27 +920,23 @@ void ResizeIfCanonical(int width, int height) {
   if (!canonical || (currentWidth == width && currentHeight == height)) {
     return;
   }
-  // Keep it on the desktop: growing from the bar towards the corner would leave it off screen.
-  RECT work = {};
-  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
-    work.left = 0;
-    work.top = 0;
-    work.right = GetSystemMetrics(SM_CXSCREEN);
-    work.bottom = GetSystemMetrics(SM_CYSCREEN);
-  }
+  // Keeps the switch on the desktop, not on the work area: a window the user placed over the
+  // taskbar stays where he put it while it changes size.
+  RECT desktop = {};
+  DesktopBounds(&desktop);
   int left = rect.left;
   int top = rect.top;
-  if (left + width > work.right) {
-    left = work.right - width;
+  if (left + width > desktop.right) {
+    left = desktop.right - width;
   }
-  if (top + height > work.bottom) {
-    top = work.bottom - height;
+  if (top + height > desktop.bottom) {
+    top = desktop.bottom - height;
   }
-  if (left < work.left) {
-    left = work.left;
+  if (left < desktop.left) {
+    left = desktop.left;
   }
-  if (top < work.top) {
-    top = work.top;
+  if (top < desktop.top) {
+    top = desktop.top;
   }
   SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }

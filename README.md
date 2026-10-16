@@ -29,9 +29,11 @@ se copia a cualquier PC con Windows y anda.
   no le pasa el mouse a la página: ahí el borde redimensiona igual, pero el puntero no cambia). El mínimo es **60x60**. Al navegar la ventana pasa
   al tamaño de página, **160x90**, que es lo que una página necesita para leerse, y vuelve al de la
   barra cuando la mostrás. Si la redimensionaste a mano, esos cambios no la tocan. Al cambiar el
-  ancho, la página se ajusta sola.
+  ancho, la página se ajusta sola. El tope para agrandar es el borde de la pantalla, no la barra de
+  tareas: si la ventana está sobre ella, también se redimensiona ahí.
 - Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
-  (incluso encima de una página cargada).
+  (incluso encima de una página cargada). Va a cualquier lado del escritorio, incluso encima de la
+  barra de tareas; el único tope es que no se pierda fuera de la pantalla.
 - Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra. Recargar y atrás
   actúan sobre la página que tenías cargada, no sobre la barra. Hasta que no hayas cargado una
   página, esos botones (y el de duplicar) aparecen apagados: no hay nada sobre qué actuar.
