@@ -17,6 +17,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <string>
+#include <vector>
 #include <wrl.h>
 
 #include "WebView2.h"
@@ -569,13 +570,18 @@ bool WeOwnTheChord() {
 // Every open copy, hidden ones included -- a hidden window is still a window, and it is exactly
 // the one that has to come back. The visibility read comes from the same pass, before anything is
 // touched, so the decision does not change halfway through hiding or showing them.
-constexpr int kMaxInstances = 16;
-HWND g_instances[kMaxInstances] = {};
-int g_instanceTotal = 0;
+//
+// No fixed size on purpose: with a ceiling the copies past it simply vanished from the layout, and
+// the duplicate search went on to place windows on top of the ones it could not see.
+std::vector<HWND> g_instances;
 bool g_anyInstanceVisible = false;
 
+// Ceiling for the drag/push snapshot only, which lives in fixed arrays. Past this many copies a drag
+// stops respecting the ones it did not read; a screen this size cannot really hold that many.
+constexpr int kMaxInstances = 64;
+
 void CollectInstances() {
-  g_instanceTotal = 0;
+  g_instances.clear();
   g_anyInstanceVisible = false;
   EnumWindows(
       [](HWND window, LPARAM) -> BOOL {
@@ -586,9 +592,7 @@ void CollectInstances() {
         if (IsWindowVisible(window)) {
           g_anyInstanceVisible = true;
         }
-        if (g_instanceTotal < kMaxInstances) {
-          g_instances[g_instanceTotal++] = window;
-        }
+        g_instances.push_back(window);
         return TRUE;
       },
       0);
@@ -603,9 +607,9 @@ void ToggleAllInstances() {
   }
   CollectInstances();
   const UINT command = g_anyInstanceVisible ? kCommandHideAll : kCommandShowAll;
-  for (int i = 0; i < g_instanceTotal; ++i) {
-    const LPARAM focus = (command == kCommandShowAll && g_instances[i] == g_window) ? 1 : 0;
-    PostMessageW(g_instances[i], kHotkeyMessage, command, focus);
+  for (HWND peer : g_instances) {
+    const LPARAM focus = (command == kCommandShowAll && peer == g_window) ? 1 : 0;
+    PostMessageW(peer, kHotkeyMessage, command, focus);
   }
 }
 
@@ -652,9 +656,9 @@ void SaveSettings() {
 // A switch is app-wide: the other copies pick it up from the file instead of keeping their own.
 void ShareSettings() {
   CollectInstances();
-  for (int i = 0; i < g_instanceTotal; ++i) {
-    if (g_instances[i] != g_window) {
-      PostMessageW(g_instances[i], kHotkeyMessage, kCommandSettings, 0);
+  for (HWND peer : g_instances) {
+    if (peer != g_window) {
+      PostMessageW(peer, kHotkeyMessage, kCommandSettings, 0);
     }
   }
 }
@@ -897,16 +901,19 @@ void SnapshotNeighbours() {
     return;
   }
   CollectInstances();
-  for (int i = 0; i < g_instanceTotal && g_neighbourCount < kMaxInstances; ++i) {
-    if (g_instances[i] == g_window || !IsWindowVisible(g_instances[i])) {
+  for (HWND peer : g_instances) {
+    if (g_neighbourCount >= kMaxInstances) {
+      break;
+    }
+    if (peer == g_window || !IsWindowVisible(peer)) {
       continue;
     }
     RECT rect = {};
-    if (!GetWindowRect(g_instances[i], &rect)) {
+    if (!GetWindowRect(peer, &rect)) {
       continue;
     }
     Neighbour& neighbour = g_neighbours[g_neighbourCount++];
-    neighbour.window = g_instances[i];
+    neighbour.window = peer;
     neighbour.rect = rect;
     neighbour.wasOverlapping = Overlaps(rect, self);
   }
@@ -1616,7 +1623,6 @@ struct Spot {
 };
 
 constexpr int kSides = 4;
-constexpr int kMaxSpots = kMaxInstances * kSides;
 
 long long Area(const RECT& rect) {
   return (long long)(rect.right - rect.left) * (long long)(rect.bottom - rect.top);
@@ -1666,16 +1672,16 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
   const int height = source.bottom - source.top;
 
   CollectInstances();
-  RECT windows[kMaxInstances] = {};
-  int count = 0;
+  std::vector<RECT> windows;
+  windows.reserve(g_instances.size());
   RECT group = {};  // what the open copies cover between them
-  for (int i = 0; i < g_instanceTotal; ++i) {
+  for (HWND peer : g_instances) {
     RECT rect = {};
-    if (!GetWindowRect(g_instances[i], &rect)) {
+    if (!GetWindowRect(peer, &rect)) {
       continue;
     }
-    windows[count++] = rect;
-    if (count == 1) {
+    windows.push_back(rect);
+    if (windows.size() == 1) {
       group = rect;
       continue;
     }
@@ -1684,7 +1690,7 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
     if (rect.right > group.right) group.right = rect.right;
     if (rect.bottom > group.bottom) group.bottom = rect.bottom;
   }
-  if (count == 0) {
+  if (windows.empty()) {
     return false;
   }
 
@@ -1692,17 +1698,16 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
   // One window plus its share of the gap is the grid cell the rectangle test counts in.
   const long long cellWidth = (long long)width + gap;
   const long long cellHeight = (long long)height + gap;
-  Spot spots[kMaxSpots] = {};
-  int spotCount = 0;
-  for (int i = 0; i < count; ++i) {
-    const RECT& peer = windows[i];
+  std::vector<Spot> spots;
+  spots.reserve(windows.size() * kSides);
+  for (const RECT& peer : windows) {
     const RECT sides[kSides] = {
         {peer.right + gap, peer.top, peer.right + gap + width, peer.top + height},
         {peer.left, peer.bottom + gap, peer.left + width, peer.bottom + gap + height},
         {peer.left - gap - width, peer.top, peer.left - gap, peer.top + height},
         {peer.left, peer.top - gap - height, peer.left + width, peer.top - gap},
     };
-    for (int side = 0; side < kSides && spotCount < kMaxSpots; ++side) {
+    for (int side = 0; side < kSides; ++side) {
       const RECT& candidate = sides[side];
       const POINT middle = {(candidate.left + candidate.right) / 2,
                             (candidate.top + candidate.bottom) / 2};
@@ -1712,10 +1717,9 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
         continue;  // off the screen: no space on that side
       }
       bool blocked = false;
-      for (int j = 0; j < count; ++j) {
+      for (const RECT& other : windows) {
         // The reserve includes the gap on every side, so the new window never lands on another one
         // and never ends up closer than that either.
-        const RECT& other = windows[j];
         const RECT reserved = {other.left - gap, other.top - gap, other.right + gap,
                                other.bottom + gap};
         if (Overlaps(candidate, reserved)) {
@@ -1726,7 +1730,7 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
       if (blocked) {
         continue;
       }
-      Spot& entry = spots[spotCount++];
+      Spot entry = {};
       entry.rect = candidate;
       entry.side = side;
       RECT grown = {candidate.left < group.left ? candidate.left : group.left,
@@ -1743,22 +1747,23 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
         entry.balance = -entry.balance;
       }
       entry.distance = GapTo(candidate, source);
+      spots.push_back(entry);
     }
   }
-  if (spotCount == 0) {
+  if (spots.empty()) {
     return false;
   }
 
-  for (int i = 0; i < spotCount; ++i) {
-    for (int j = 0; j < spotCount; ++j) {
+  for (size_t i = 0; i < spots.size(); ++i) {
+    for (size_t j = 0; j < spots.size(); ++j) {
       if (i != j && Overlaps(spots[i].rect, spots[j].rect)) {
         ++spots[i].points;
       }
     }
   }
 
-  int best = 0;
-  for (int i = 1; i < spotCount; ++i) {
+  size_t best = 0;
+  for (size_t i = 1; i < spots.size(); ++i) {
     if (PreferSpot(spots[i], spots[best])) {
       best = i;
     }
