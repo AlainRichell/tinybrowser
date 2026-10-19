@@ -679,6 +679,22 @@ void SetPushOthers(bool on) {
 
 bool g_ctrlDown = false;
 bool g_altDown = false;
+// Auto-repeat guard per chord. It lives here, not inside the hook, because a window that starts with
+// the keys already held has to be told about them (see SeedHotkeyState).
+bool g_hotkeyDown[kHotkeyCount] = {};
+
+// A window born while Ctrl+Alt (and maybe the letter) are already held never sees those keydowns:
+// without this, the copy opened by the first Ctrl+Alt+D answers nothing until the user lets go and
+// presses the chord again.
+void SeedHotkeyState() {
+  g_ctrlDown = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+               (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+  g_altDown = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+              (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+  for (int i = 0; i < kHotkeyCount; ++i) {
+    g_hotkeyDown[i] = (GetAsyncKeyState((int)kHotkeys[i].key) & 0x8000) != 0;
+  }
+}
 
 bool HotkeyChordPressed(UINT key) {
   // Locked here instead of through GetAsyncKeyState, which does not report the injected
@@ -743,11 +759,10 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
       if (key->vkCode != chord.key) {
         continue;
       }
-      static bool down[kHotkeyCount] = {};
       if (!pressed) {
-        down[i] = false;
-      } else if (!down[i]) {  // ignore auto-repeat
-        down[i] = true;
+        g_hotkeyDown[i] = false;
+      } else if (!g_hotkeyDown[i]) {  // ignore auto-repeat
+        g_hotkeyDown[i] = true;
         if (!HotkeyChordPressed(chord.key)) {
           break;
         }
@@ -2020,6 +2035,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (g_startTarget.size() >= 2 && g_startTarget.front() == L'"' && g_startTarget.back() == L'"') {
     g_startTarget = g_startTarget.substr(1, g_startTarget.size() - 2);
   }
+  // The page is known from the command line, long before the engine exists. Remembering it here is
+  // what lets Ctrl+Alt+D work in the first second of a new window instead of waiting for that page
+  // to finish opening: the duplicate only needs to know which address to copy.
+  if (!g_startTarget.empty()) {
+    g_url = Normalize(g_startTarget);
+  }
 
   const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(com)) {
@@ -2071,6 +2092,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   SendMessageW(g_window, WM_SETICON, ICON_SMALL, (LPARAM)iconSmall);
 
   // Both hooks have to be installed on the thread that runs the message loop.
+  SeedHotkeyState();
   g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboard, GetModuleHandleW(nullptr), 0);
   g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouse, GetModuleHandleW(nullptr), 0);
 
