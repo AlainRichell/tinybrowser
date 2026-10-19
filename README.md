@@ -39,11 +39,14 @@ se copia a cualquier PC con Windows y anda.
   barra de tareas; el único tope es que no se pierda fuera de la pantalla.
 - Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra. Recargar y atrás
   actúan sobre la página que tenías cargada, no sobre la barra. Hasta que no hayas cargado una
-  página, esos botones (y el de duplicar) aparecen apagados: no hay nada sobre qué actuar.
+  página, esos botones aparecen apagados: no hay nada sobre qué actuar.
 - Los enlaces que abren pestaña nueva se cargan en la misma ventana.
 - **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
   pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
-- El botón de los cuadraditos de la barra, o `Ctrl+Alt+D`, abre la página actual en **otra ventana**
+- El botón de las tres líneas con perillas de la barra abre las **opciones** (ver más abajo); el
+  botón de duplicar ya no está, porque en la pantalla inicial no servía: duplicar se hace con el
+  atajo.
+- `Ctrl+Alt+D` abre la página actual en **otra ventana**
   del mismo tamaño, con **4 px de aire** respecto de las que ya hay y nunca encima de otra, ni por un
   píxel: si el conjunto tiene un hueco (una L, un cuadrado al que le falta una celda) la nueva cae
   justo ahí; si no, en el lado libre más cercano a la ventana desde la que duplicaste, prefiriendo lo
@@ -51,6 +54,23 @@ se copia a cualquier PC con Windows y anda.
   nada: no hay copias superpuestas.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
+
+## Opciones
+
+El botón de las tres líneas con perillas, en la barra, abre el panel de opciones (se cierra con un
+clic fuera de los controles o con `Escape`). Son dos interruptores y se guardan en `tinybrowser.ini`,
+al lado del exe, así que valen para todas las ventanas y siguen ahí la próxima vez:
+
+- **No solapar ventanas** (activado de fábrica): ninguna ventana puede quedar encima de otra. Al
+  arrastrarla contra una vecina se detiene a 4 px —cada ventana reserva 2 px de su lado— y en
+  diagonal se desliza por el costado en vez de trabarse. Al agrandarla con un borde pasa lo mismo:
+  el borde se detiene. Las ventanas que ya estaban superpuestas antes de activar la opción se quedan
+  como están; si las separás, ya no se pueden volver a superponer.
+- **Al arrastrar, empujar otras** (apagado de fábrica): en vez de detenerse, la ventana arrastrada
+  corre a la que tiene adelante, siempre en ángulos rectos y en cascada si hay más de una; cuando
+  alguna no tiene lugar para correrse, la que arrastraste se detiene como si la opción estuviera
+  apagada. Necesita la opción de arriba: sin "no solapar" no tiene sentido, por eso queda
+  deshabilitada en su lugar mientras aquella está apagada. El redimensionado empuja igual.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
 
 ## Requisitos

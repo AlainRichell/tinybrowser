@@ -62,6 +62,11 @@ constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
 constexpr UINT kCommandShowAll = 11;
+constexpr UINT kCommandSettings = 12;  // a switch changed in another copy
+
+// The two switches are kept in a file next to the exe so every copy starts with the same answers.
+constexpr wchar_t kSettingsFile[] = L"tinybrowser.ini";
+constexpr wchar_t kSettingsSection[] = L"options";
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
@@ -71,6 +76,8 @@ constexpr wchar_t kRuntimeUrl[] = L"https://go.microsoft.com/fwlink/p/?LinkId=21
 constexpr wchar_t kBootstrapperName[] = L"MicrosoftEdgeWebview2Setup.exe";
 
 HWND g_window = nullptr;
+bool g_blockOverlap = true;   // option: a window never ends up on top of another one
+bool g_pushOthers = false;    // option: the window being dragged moves its neighbours aside
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 ComPtr<ICoreWebView2Controller> g_controller;
@@ -107,8 +114,8 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   body{display:flex;flex-direction:column;gap:3px;padding:3px;user-select:none;cursor:default}
   #grip{height:8px;border-radius:3px;background:repeating-linear-gradient(90deg,#2b3644 0 6px,transparent 6px 12px);cursor:move}
   .row{display:flex;gap:3px;align-items:center}
-  input{flex:1;min-width:0;height:20px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;border:1px solid #2b3644;border-radius:4px}
-  input:focus{outline:none;border-color:#4a90c2}
+  #url{flex:1;min-width:0;height:20px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;border:1px solid #2b3644;border-radius:4px}
+  #url:focus{outline:none;border-color:#4a90c2}
   button{flex:0 0 20px;height:20px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;border-radius:4px}
   button:hover{color:#fff;background:#253141}
   #go{display:inline-flex;align-items:center;justify-content:center}
@@ -122,10 +129,20 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #commands[hidden]{display:none}
   #commands .k{display:inline-block;min-width:58px;color:#7fb3d5}
   #closepanel{font-size:9px;color:#5b6b7d;margin-top:1px}
+  #options{display:inline-flex;align-items:center;justify-content:center}
+  #settings{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:6;padding:4px 6px;
+    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.3;
+    color:#9db2c6;overflow:auto}
+  #settings[hidden]{display:none}
+  #settings .title{color:#7fb3d5;margin-bottom:2px}
+  #settings label{display:flex;align-items:center;gap:4px;cursor:pointer}
+  #settings input{flex:0 0 auto;width:11px;height:11px;margin:0;accent-color:#4a90c2;cursor:pointer}
+  #settings input:disabled{cursor:default}
+  #closepanel2{font-size:9px;color:#5b6b7d;margin-top:1px}
 </style></head><body>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
-<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="dup" title="Duplicate in another window (Ctrl+Alt+D)"%DISABLED%>&#10697;</button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
+<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
 <div id="brand">tinybrowser 2026</div>
 <div id="commands" hidden>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
@@ -135,6 +152,12 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div><span class="k">Ctrl+Alt+X</span> cerrar</div>
 <div><span class="k">Alt+arrastrar</span> mover</div>
 <div id="closepanel">clic para cerrar</div>
+</div>
+<div id="settings" hidden>
+<div class="title">Opciones</div>
+<label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
+<label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
+<div id="closepanel2">clic para cerrar</div>
 </div>
 <script>
 (function () {
@@ -150,16 +173,37 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   document.getElementById("back").onclick = function () { send("B"); };
   document.getElementById("fwd").onclick = function () { send("F"); };
   document.getElementById("reload").onclick = function () { send("R"); };
-  document.getElementById("dup").onclick = function () { send("C"); };
   document.getElementById("close").onclick = function () { send("X"); };
 
-  // The command list lives in a panel over the whole bar, so it fits at any window size.
+  // Both panels cover the whole bar, so they fit at any window size, and only one is open at once.
   var commands = document.getElementById("commands");
-  document.getElementById("help").onclick = function () { send("H"); commands.hidden = !commands.hidden; };
+  var settings = document.getElementById("settings");
+  document.getElementById("help").onclick = function () {
+    settings.hidden = true;
+    commands.hidden = !commands.hidden;
+  };
   commands.onclick = function () { commands.hidden = true; };
+  document.getElementById("options").onclick = function () {
+    commands.hidden = true;
+    settings.hidden = !settings.hidden;
+  };
+  settings.onclick = function (e) {
+    // Only the empty area closes it: a click on a switch or its label must reach the checkbox.
+    if (e.target === settings) { settings.hidden = true; }
+  };
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") { commands.hidden = true; }
+    if (e.key === "Escape") { commands.hidden = true; settings.hidden = true; }
   }, true);
+
+  // The switches belong to the host: the page only reports the new value. Pushing needs the rule
+  // above it to mean anything, so it stays disabled in its place while that one is off.
+  var noOverlap = document.getElementById("nooverlap");
+  var pushOthers = document.getElementById("push");
+  noOverlap.onchange = function () {
+    send("N" + (noOverlap.checked ? "1" : "0"));
+    pushOthers.disabled = !noOverlap.checked;
+  };
+  pushOthers.onchange = function () { send("P" + (pushOthers.checked ? "1" : "0")); };
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
   // start inside the page: the grip reports pixel deltas and the host moves itself.
@@ -340,6 +384,15 @@ void SetPageZoomControl(bool enabled) {
   }
 }
 
+// Single-use placeholders in the bar page: the value goes in once and the token disappears.
+void ReplaceToken(std::wstring* html, const wchar_t* token, const wchar_t* value) {
+  const size_t at = html->find(token);
+  if (at == std::wstring::npos) {
+    return;
+  }
+  html->replace(at, std::wcslen(token), value);
+}
+
 void ShowBar() {
   if (!g_webview) {
     return;
@@ -357,6 +410,10 @@ void ShowBar() {
     html.replace(slot, 10, disabled);
     slot += disabled.size();  // every button has its own placeholder, not just the first
   }
+  ReplaceToken(&html, L"%CHECKED_OVERLAP%", g_blockOverlap ? L" checked" : L"");
+  ReplaceToken(&html, L"%CHECKED_PUSH%", g_pushOthers ? L" checked" : L"");
+  // Pushing without the rule above it makes no sense, so it is disabled in place, not hidden.
+  ReplaceToken(&html, L"%PUSH_DISABLED%", g_blockOverlap ? L"" : L" disabled");
   g_showingBar = true;
   ResetFit();
   ResizeIfCanonical(kBarWidth, kBarHeight);
@@ -390,6 +447,7 @@ void RunInPage(const wchar_t* script) {
 }
 
 void DuplicateInNewInstance();  // defined with the placement helpers below
+void LoadSettings();            // defined with the other instance-wide helpers below
 
 // Ctrl+Alt+C is the only way in and out of hiding: a hidden window leaves the taskbar and the
 // z-order, so nothing else on screen could bring it back.
@@ -457,6 +515,8 @@ void HandleHotkey(UINT id, LPARAM data) {
     HideInstance();
   } else if (id == kCommandShowAll) {
     ShowInstance(data != 0);
+  } else if (id == kCommandSettings) {
+    LoadSettings();  // another copy changed a switch: take its answer from the file
   }
 }
 
@@ -547,6 +607,74 @@ void ToggleAllInstances() {
     const LPARAM focus = (command == kCommandShowAll && g_instances[i] == g_window) ? 1 : 0;
     PostMessageW(g_instances[i], kHotkeyMessage, command, focus);
   }
+}
+
+// The file sits beside the exe. Writing it can fail (a read-only folder) and that is fine: the
+// switches then simply last for the session.
+void SettingsPath(wchar_t* path) {
+  path[0] = 0;
+  wchar_t exe[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+    return;
+  }
+  wchar_t* slash = std::wcsrchr(exe, L'\\');
+  if (slash) {
+    *(slash + 1) = 0;
+  } else {
+    exe[0] = 0;
+  }
+  wsprintfW(path, L"%s%s", exe, kSettingsFile);
+}
+
+void LoadSettings() {
+  wchar_t path[MAX_PATH] = {};
+  SettingsPath(path);
+  if (!path[0]) {
+    return;
+  }
+  g_blockOverlap = GetPrivateProfileIntW(kSettingsSection, L"NoOverlap", 1, path) != 0;
+  g_pushOthers = GetPrivateProfileIntW(kSettingsSection, L"PushOthers", 0, path) != 0;
+}
+
+void SaveSettings() {
+  wchar_t path[MAX_PATH] = {};
+  SettingsPath(path);
+  if (!path[0]) {
+    return;
+  }
+  wchar_t value[8] = {};
+  wsprintfW(value, L"%d", g_blockOverlap ? 1 : 0);
+  WritePrivateProfileStringW(kSettingsSection, L"NoOverlap", value, path);
+  wsprintfW(value, L"%d", g_pushOthers ? 1 : 0);
+  WritePrivateProfileStringW(kSettingsSection, L"PushOthers", value, path);
+}
+
+// A switch is app-wide: the other copies pick it up from the file instead of keeping their own.
+void ShareSettings() {
+  CollectInstances();
+  for (int i = 0; i < g_instanceTotal; ++i) {
+    if (g_instances[i] != g_window) {
+      PostMessageW(g_instances[i], kHotkeyMessage, kCommandSettings, 0);
+    }
+  }
+}
+
+void SetBlockOverlap(bool on) {
+  if (g_blockOverlap == on) {
+    return;
+  }
+  g_blockOverlap = on;
+  SaveSettings();
+  ShareSettings();
+}
+
+void SetPushOthers(bool on) {
+  if (g_pushOthers == on) {
+    return;
+  }
+  g_pushOthers = on;
+  SaveSettings();
+  ShareSettings();
 }
 
 bool g_ctrlDown = false;
@@ -715,6 +843,276 @@ void DesktopBounds(RECT* desktop) {
   desktop->bottom = top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
 }
 
+// Air each window keeps on its own sides: two of them therefore end up 4 px apart, and touching is
+// only what is left when the screen has no room for the gap.
+constexpr int kWindowMargin = 2;
+constexpr int kWindowGap = kWindowMargin * 2;
+
+// True when the rectangles share more than an edge, on both axes.
+bool Overlaps(const RECT& a, const RECT& b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+bool SameRect(const RECT& a, const RECT& b) {
+  return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+bool InsideDesktop(const RECT& rect) {
+  RECT desktop = {};
+  DesktopBounds(&desktop);
+  return rect.left >= desktop.left && rect.top >= desktop.top && rect.right <= desktop.right &&
+         rect.bottom <= desktop.bottom;
+}
+
+// The other copies, read once when a gesture starts: while one window is being dragged the others do
+// not move on their own, so asking Windows again on every pixel would be pure overhead.
+struct Neighbour {
+  HWND window;
+  RECT rect;
+  bool wasOverlapping;  // already on top of us before the option existed: that one is never fought
+};
+
+Neighbour g_neighbours[kMaxInstances] = {};
+int g_neighbourCount = 0;
+
+void SnapshotNeighbours() {
+  g_neighbourCount = 0;
+  RECT self = {};
+  if (!GetWindowRect(g_window, &self)) {
+    return;
+  }
+  CollectInstances();
+  for (int i = 0; i < g_instanceTotal && g_neighbourCount < kMaxInstances; ++i) {
+    if (g_instances[i] == g_window || !IsWindowVisible(g_instances[i])) {
+      continue;
+    }
+    RECT rect = {};
+    if (!GetWindowRect(g_instances[i], &rect)) {
+      continue;
+    }
+    Neighbour& neighbour = g_neighbours[g_neighbourCount++];
+    neighbour.window = g_instances[i];
+    neighbour.rect = rect;
+    neighbour.wasOverlapping = Overlaps(rect, self);
+  }
+}
+
+// Slides along what it runs into instead of stopping dead: the axis that reaches a neighbour stops at
+// the gap while the other one keeps going, which is what lets a diagonal drag glide along the
+// neighbour. `from` is always a free position, so only what lies ahead of the movement matters.
+RECT ConstrainMove(const RECT& from, const RECT& to) {
+  const int width = from.right - from.left;
+  const int height = from.bottom - from.top;
+  RECT result = to;
+
+  if (to.left > from.left) {  // moving right
+    for (int i = 0; i < g_neighbourCount; ++i) {
+      const Neighbour& n = g_neighbours[i];
+      if (n.wasOverlapping || n.rect.left < from.right) continue;  // behind us: not in the way
+      if (n.rect.top >= to.bottom || n.rect.bottom <= to.top) continue;  // another row
+      const int limit = n.rect.left - kWindowGap;
+      if (result.right > limit) {
+        result.right = limit;
+        result.left = limit - width;
+      }
+    }
+    if (result.left < from.left) {  // the gap leaves no room to advance at all
+      result.left = from.left;
+      result.right = from.right;
+    }
+  } else if (to.left < from.left) {  // moving left
+    for (int i = 0; i < g_neighbourCount; ++i) {
+      const Neighbour& n = g_neighbours[i];
+      if (n.wasOverlapping || n.rect.right > from.left) continue;
+      if (n.rect.top >= to.bottom || n.rect.bottom <= to.top) continue;
+      const int limit = n.rect.right + kWindowGap;
+      if (result.left < limit) {
+        result.left = limit;
+        result.right = limit + width;
+      }
+    }
+    if (result.right > from.right) {
+      result.left = from.left;
+      result.right = from.right;
+    }
+  }
+
+  if (to.top > from.top) {  // moving down
+    for (int i = 0; i < g_neighbourCount; ++i) {
+      const Neighbour& n = g_neighbours[i];
+      if (n.wasOverlapping || n.rect.top < from.bottom) continue;
+      if (n.rect.right <= result.left || n.rect.left >= result.right) continue;  // another column
+      const int limit = n.rect.top - kWindowGap;
+      if (result.bottom > limit) {
+        result.bottom = limit;
+        result.top = limit - height;
+      }
+    }
+    if (result.top < from.top) {
+      result.top = from.top;
+      result.bottom = from.bottom;
+    }
+  } else if (to.top < from.top) {  // moving up
+    for (int i = 0; i < g_neighbourCount; ++i) {
+      const Neighbour& n = g_neighbours[i];
+      if (n.wasOverlapping || n.rect.bottom > from.top) continue;
+      if (n.rect.right <= result.left || n.rect.left >= result.right) continue;
+      const int limit = n.rect.bottom + kWindowGap;
+      if (result.top < limit) {
+        result.top = limit;
+        result.bottom = limit + height;
+      }
+    }
+    if (result.bottom > from.bottom) {
+      result.top = from.top;
+      result.bottom = from.bottom;
+    }
+  }
+
+  // Whatever the clamps did, never land on a neighbour that was clear before the gesture.
+  for (int i = 0; i < g_neighbourCount; ++i) {
+    if (!g_neighbours[i].wasOverlapping && Overlaps(result, g_neighbours[i].rect)) {
+      return from;
+    }
+  }
+  return result;
+}
+
+// A resize only stops the edges being dragged; the opposite ones belong to the anchor and stay put.
+RECT ConstrainResize(const RECT& from, const RECT& to) {
+  RECT result = to;
+  const bool east = std::wcschr(g_resizeEdge, L'e') != nullptr;
+  const bool west = std::wcschr(g_resizeEdge, L'w') != nullptr;
+  const bool south = std::wcschr(g_resizeEdge, L's') != nullptr;
+  const bool north = std::wcschr(g_resizeEdge, L'n') != nullptr;
+  for (int i = 0; i < g_neighbourCount; ++i) {
+    const Neighbour& n = g_neighbours[i];
+    if (n.wasOverlapping) continue;
+    const bool sameRows = n.rect.top < result.bottom && result.top < n.rect.bottom;
+    const bool sameColumns = n.rect.left < result.right && result.left < n.rect.right;
+    if (east && sameRows && n.rect.left >= from.right) {
+      const int limit = n.rect.left - kWindowGap;
+      if (result.right > limit) result.right = limit;
+    }
+    if (west && sameRows && n.rect.right <= from.left) {
+      const int limit = n.rect.right + kWindowGap;
+      if (result.left < limit) result.left = limit;
+    }
+    if (south && sameColumns && n.rect.top >= from.bottom) {
+      const int limit = n.rect.top - kWindowGap;
+      if (result.bottom > limit) result.bottom = limit;
+    }
+    if (north && sameColumns && n.rect.bottom <= from.top) {
+      const int limit = n.rect.bottom + kWindowGap;
+      if (result.top < limit) result.top = limit;
+    }
+  }
+  if (result.right - result.left < kMinWidth || result.bottom - result.top < kMinHeight) {
+    return from;
+  }
+  return result;
+}
+
+// Moves the neighbours out of the way, always in right angles: a pushed window keeps its own size and
+// travels along the axis the gesture is advancing on, pushing whatever it finds in turn. When any of
+// them would end up off the desktop the step is refused and the caller falls back to stopping.
+bool PushNeighbours(const RECT& target, bool horizontal, bool forward) {
+  int index[kMaxInstances] = {};
+  RECT pending[kMaxInstances] = {};
+  int count = 0;
+  for (int i = 0; i < g_neighbourCount; ++i) {
+    if (g_neighbours[i].wasOverlapping) continue;
+    index[count] = i;
+    pending[count] = g_neighbours[i].rect;
+    ++count;
+  }
+
+  // Each barrier remembers which window it came from: a pushed window must not push itself again,
+  // which would send it walking to the edge of the screen on every step.
+  RECT barriers[kMaxInstances + 1] = {};
+  int owner[kMaxInstances + 1] = {};
+  int barrierCount = 0;
+  barriers[barrierCount] = target;
+  owner[barrierCount] = -1;  // the window being dragged belongs to nobody
+  ++barrierCount;
+
+  for (int b = 0; b < barrierCount; ++b) {
+    for (int i = 0; i < count; ++i) {
+      if (owner[b] == i) continue;
+      if (!Overlaps(pending[i], barriers[b])) continue;
+      const int shift =
+          horizontal
+              ? (forward ? barriers[b].right + kWindowGap - pending[i].left
+                         : pending[i].right - (barriers[b].left - kWindowGap))
+              : (forward ? barriers[b].bottom + kWindowGap - pending[i].top
+                         : pending[i].bottom - (barriers[b].top - kWindowGap));
+      if (shift <= 0) continue;
+      if (horizontal) {
+        pending[i].left += forward ? shift : -shift;
+        pending[i].right += forward ? shift : -shift;
+      } else {
+        pending[i].top += forward ? shift : -shift;
+        pending[i].bottom += forward ? shift : -shift;
+      }
+      if (!InsideDesktop(pending[i])) {
+        return false;  // nothing has been moved yet, so the caller can still just stop
+      }
+      if (barrierCount <= kMaxInstances) {
+        barriers[barrierCount] = pending[i];
+        owner[barrierCount] = i;
+        ++barrierCount;
+      }
+    }
+  }
+
+  for (int i = 0; i < count; ++i) {
+    Neighbour& neighbour = g_neighbours[index[i]];
+    if (SameRect(neighbour.rect, pending[i])) continue;
+    neighbour.rect = pending[i];  // the snapshot follows, so the next step starts from the truth
+    SetWindowPos(neighbour.window, nullptr, pending[i].left, pending[i].top, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  return true;
+}
+
+// Where a moved window really ends up: as asked when the rule is off, stopping at the gap when it is
+// on, and shoving the neighbour aside when pushing is on and the screen leaves room for it.
+RECT StepMove(const RECT& from, const RECT& to) {
+  if (!g_blockOverlap) {
+    return to;
+  }
+  const RECT allowed = ConstrainMove(from, to);
+  if (SameRect(allowed, to) || !g_pushOthers) {
+    return allowed;
+  }
+  const int dx = to.left - from.left;
+  const int dy = to.top - from.top;
+  const bool horizontalFirst = (dx >= 0 ? dx : -dx) >= (dy >= 0 ? dy : -dy);
+  if (horizontalFirst) {
+    if (dx != 0 && PushNeighbours(to, true, dx > 0)) return to;
+    if (dy != 0 && PushNeighbours(to, false, dy > 0)) return to;
+  } else {
+    if (dy != 0 && PushNeighbours(to, false, dy > 0)) return to;
+    if (dx != 0 && PushNeighbours(to, true, dx > 0)) return to;
+  }
+  return allowed;
+}
+
+RECT StepResize(const RECT& from, const RECT& to) {
+  if (!g_blockOverlap) {
+    return to;
+  }
+  const RECT allowed = ConstrainResize(from, to);
+  if (SameRect(allowed, to) || !g_pushOthers) {
+    return allowed;
+  }
+  if (std::wcschr(g_resizeEdge, L'e') && PushNeighbours(to, true, true)) return to;
+  if (std::wcschr(g_resizeEdge, L'w') && PushNeighbours(to, true, false)) return to;
+  if (std::wcschr(g_resizeEdge, L's') && PushNeighbours(to, false, true)) return to;
+  if (std::wcschr(g_resizeEdge, L'n') && PushNeighbours(to, false, false)) return to;
+  return allowed;
+}
+
 // Keeps a moved or dragged rectangle inside the desktop: past the edge it is invisible, which read
 // as "the resize does nothing", and a frameless window has no title bar to pull back.
 void ClampToDesktop(int* left, int* top, int* right, int* bottom) {
@@ -741,6 +1139,10 @@ void ClampToDesktop(int* left, int* top, int* right, int* bottom) {
 }
 
 void ResizeTo(POINT point) {
+  RECT from = {};
+  if (!GetWindowRect(g_window, &from)) {
+    return;
+  }
   const int dx = point.x - g_dragStart.x;
   const int dy = point.y - g_dragStart.y;
   int left = g_resizeAnchor.left;
@@ -775,16 +1177,25 @@ void ResizeTo(POINT point) {
       top = bottom - height;
     }
   }
-  SetWindowPos(g_window, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+  const RECT to = {left, top, left + width, top + height};
+  const RECT target = StepResize(from, to);
+  SetWindowPos(g_window, nullptr, target.left, target.top, target.right - target.left,
+               target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void MoveTo(POINT point) {
+  RECT from = {};
+  if (!GetWindowRect(g_window, &from)) {
+    return;
+  }
   int left = g_resizeAnchor.left + (point.x - g_dragStart.x);
   int top = g_resizeAnchor.top + (point.y - g_dragStart.y);
-  int right = left + (g_resizeAnchor.right - g_resizeAnchor.left);
-  int bottom = top + (g_resizeAnchor.bottom - g_resizeAnchor.top);
+  int right = left + (from.right - from.left);
+  int bottom = top + (from.bottom - from.top);
   ClampToDesktop(&left, &top, &right, &bottom);
-  SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  const RECT to = {left, top, right, bottom};
+  const RECT target = StepMove(from, to);
+  SetWindowPos(g_window, nullptr, target.left, target.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // The hook sees the mouse before the engine's scrollbars do, and swallowing an event here is what
@@ -828,6 +1239,12 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       return CallNextHookEx(nullptr, code, wparam, lparam);
     }
     if (wparam == WM_LBUTTONDOWN) {
+      // Any press inside the window starts a gesture -- an edge, Alt anywhere, or the grip, which
+      // the page reports as deltas -- so the other copies are read once, right here. With the rule
+      // off there is nothing to compare against, so the enumeration is skipped entirely.
+      if (g_blockOverlap && InsideWindow(point)) {
+        SnapshotNeighbours();
+      }
       const int edges = EdgesAt(point);
       // Alt moves the window from ANYWHERE in it -- that is what the README promises -- so with Alt
       // held the edges are not consulted at all. Treating an Alt press on an edge as a resize made
@@ -859,20 +1276,23 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
   return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
+// The bar's grip reports deltas from the page, so it lands here instead of in the hook.
 void MoveBy(long dx, long dy) {
   if ((dx == 0 && dy == 0) || !g_window) {
     return;
   }
-  RECT rect = {};
-  if (!GetWindowRect(g_window, &rect)) {
+  RECT from = {};
+  if (!GetWindowRect(g_window, &from)) {
     return;
   }
-  int left = rect.left + (int)dx;
-  int top = rect.top + (int)dy;
-  int right = left + (rect.right - rect.left);
-  int bottom = top + (rect.bottom - rect.top);
+  int left = from.left + (int)dx;
+  int top = from.top + (int)dy;
+  int right = left + (from.right - from.left);
+  int bottom = top + (from.bottom - from.top);
   ClampToDesktop(&left, &top, &right, &bottom);
-  SetWindowPos(g_window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  const RECT to = {left, top, right, bottom};
+  const RECT target = StepMove(from, to);
+  SetWindowPos(g_window, nullptr, target.left, target.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void OnBarCommand(const std::wstring& message) {
@@ -887,6 +1307,9 @@ void OnBarCommand(const std::wstring& message) {
     // the page we remember; reloading the bar would leave a blank window and no bar at all.
     case L'R': if (!g_url.empty()) Navigate(g_url); break;
     case L'C': DuplicateInNewInstance(); break;
+    // From the options panel: the switches themselves, and the note that they changed.
+    case L'N': SetBlockOverlap(message.size() > 1 && message[1] == L'1'); break;
+    case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
     case L'S': ShowBar(); break;
     case L'M': {
@@ -1136,12 +1559,6 @@ struct Spot {
 
 constexpr int kSides = 4;
 constexpr int kMaxSpots = kMaxInstances * kSides;
-// Air between tiled copies: flush against each other they read as one window with a seam.
-constexpr int kDuplicateGap = 4;
-
-bool Overlaps(const RECT& a, const RECT& b) {
-  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-}
 
 long long Area(const RECT& rect) {
   return (long long)(rect.right - rect.left) * (long long)(rect.bottom - rect.top);
@@ -1309,7 +1726,7 @@ void DuplicateInNewInstance() {
   // The gap is air, not a rule: if the screen only allows a flush spot, that is still better than
   // nothing, and if no free spot exists at all nothing is opened -- a copy never covers another one.
   RECT spot = {};
-  if (!FindDuplicateSpot(&spot, kDuplicateGap) && !FindDuplicateSpot(&spot, 0)) {
+  if (!FindDuplicateSpot(&spot, kWindowGap) && !FindDuplicateSpot(&spot, 0)) {
     return;
   }
   wchar_t arguments[900] = {};
@@ -1538,6 +1955,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  LoadSettings();
   const std::wstring arguments = Trim(commandLine ? commandLine : L"");
   if (arguments.compare(0, 8, L"--place ") == 0) {
     // A duplicate asks for its own rectangle so the copy does not land on top of the original.
