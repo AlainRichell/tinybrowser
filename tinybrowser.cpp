@@ -1113,7 +1113,8 @@ void FitAndPlace() {
 }
 
 // Where the next duplicate goes. Each open copy reserves one window-sized "ghost" area on each of
-// its four sides: an area that runs into another copy means that side has no room and is dropped,
+// its four sides, plus the gap: an area that runs into another copy means that side has no room and
+// is dropped,
 // and when the areas of two different copies land on the same spot it means both have room to grow
 // there -- the spot earns a point per extra area, so the hole in an L-shape wins over making a row
 // longer. Ties go to the spot nearest the window being duplicated, then to the one that leaves the
@@ -1135,6 +1136,8 @@ struct Spot {
 
 constexpr int kSides = 4;
 constexpr int kMaxSpots = kMaxInstances * kSides;
+// Air between tiled copies: flush against each other they read as one window with a seam.
+constexpr int kDuplicateGap = 4;
 
 bool Overlaps(const RECT& a, const RECT& b) {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -1176,9 +1179,10 @@ bool PreferSpot(const Spot& a, const Spot& b) {
   return a.side < b.side;
 }
 
-// Walks every open copy, one candidate per side, and keeps the best one. False when the screen has
-// no room left beside any copy.
-bool FindDuplicateSpot(RECT* spot) {
+// Walks every open copy, one candidate per side, and keeps the best one. `gap` is the air left
+// around the new window; at 0 it may sit flush but never on top. False when the screen has no room
+// left beside any copy.
+bool FindDuplicateSpot(RECT* spot, int gap) {
   RECT source = {};
   if (!g_window || !GetWindowRect(g_window, &source)) {
     return false;
@@ -1210,15 +1214,18 @@ bool FindDuplicateSpot(RECT* spot) {
   }
 
   const long long groupArea = Area(group);
+  // One window plus its share of the gap is the grid cell the rectangle test counts in.
+  const long long cellWidth = (long long)width + gap;
+  const long long cellHeight = (long long)height + gap;
   Spot spots[kMaxSpots] = {};
   int spotCount = 0;
   for (int i = 0; i < count; ++i) {
     const RECT& peer = windows[i];
     const RECT sides[kSides] = {
-        {peer.right, peer.top, peer.right + width, peer.top + height},
-        {peer.left, peer.bottom, peer.left + width, peer.bottom + height},
-        {peer.left - width, peer.top, peer.left, peer.top + height},
-        {peer.left, peer.top - height, peer.left + width, peer.top},
+        {peer.right + gap, peer.top, peer.right + gap + width, peer.top + height},
+        {peer.left, peer.bottom + gap, peer.left + width, peer.bottom + gap + height},
+        {peer.left - gap - width, peer.top, peer.left - gap, peer.top + height},
+        {peer.left, peer.top - gap - height, peer.left + width, peer.top - gap},
     };
     for (int side = 0; side < kSides && spotCount < kMaxSpots; ++side) {
       const RECT& candidate = sides[side];
@@ -1231,7 +1238,12 @@ bool FindDuplicateSpot(RECT* spot) {
       }
       bool blocked = false;
       for (int j = 0; j < count; ++j) {
-        if (Overlaps(candidate, windows[j])) {
+        // The reserve includes the gap on every side, so the new window never lands on another one
+        // and never ends up closer than that either.
+        const RECT& other = windows[j];
+        const RECT reserved = {other.left - gap, other.top - gap, other.right + gap,
+                               other.bottom + gap};
+        if (Overlaps(candidate, reserved)) {
           blocked = true;  // the ghost area hit a window, so that side does not count
           break;
         }
@@ -1247,11 +1259,11 @@ bool FindDuplicateSpot(RECT* spot) {
                     candidate.right > group.right ? candidate.right : group.right,
                     candidate.bottom > group.bottom ? candidate.bottom : group.bottom};
       entry.growth = Area(grown) - groupArea;
-      const long long grownWidth = grown.right - grown.left;
-      const long long grownHeight = grown.bottom - grown.top;
-      // Zero when the bounding box is exactly N windows wide by M tall; the smaller the residue,
-      // the closer the group is to a filled rectangle instead of a long row or column.
-      entry.balance = grownWidth * height - grownHeight * width;
+      const long long grownWidth = grown.right - grown.left + gap;
+      const long long grownHeight = grown.bottom - grown.top + gap;
+      // Zero when the bounding box is exactly N cells wide by M tall; the smaller the residue, the
+      // closer the group is to a filled rectangle instead of a long row or column.
+      entry.balance = grownWidth * cellHeight - grownHeight * cellWidth;
       if (entry.balance < 0) {
         entry.balance = -entry.balance;
       }
@@ -1294,9 +1306,12 @@ void DuplicateInNewInstance() {
   if (!GetWindowRect(g_window, &rect)) {
     return;
   }
-  // No room left beside any copy: it opens over this one, still visible, instead of doing nothing.
-  RECT spot = rect;
-  FindDuplicateSpot(&spot);
+  // The gap is air, not a rule: if the screen only allows a flush spot, that is still better than
+  // nothing, and if no free spot exists at all nothing is opened -- a copy never covers another one.
+  RECT spot = {};
+  if (!FindDuplicateSpot(&spot, kDuplicateGap) && !FindDuplicateSpot(&spot, 0)) {
+    return;
+  }
   wchar_t arguments[900] = {};
   wsprintfW(arguments, L"--place %d %d %d %d \"%s\"", spot.left, spot.top,
             spot.right - spot.left, spot.bottom - spot.top, g_url.c_str());
