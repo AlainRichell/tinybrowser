@@ -58,6 +58,10 @@ constexpr UINT kHotkeyQuit = 2;       // Ctrl+Alt+X
 constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
 constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
 constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
+// CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
+// toggling each window on its own: all of them follow the same command on the same press.
+constexpr UINT kCommandHideAll = 10;
+constexpr UINT kCommandShowAll = 11;
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
@@ -389,16 +393,35 @@ void DuplicateInNewInstance();  // defined with the placement helpers below
 
 // Ctrl+Alt+C is the only way in and out of hiding: a hidden window leaves the taskbar and the
 // z-order, so nothing else on screen could bring it back.
-void ToggleHidden() {
-  if (!g_window) {
-    return;
-  }
-  if (IsWindowVisible(g_window)) {
+void ToggleAllInstances();  // defined with the app-wide chord below
+
+// Hiding and showing are commands rather than toggles: every copy of the app obeys the same one on
+// the same press, so two of them can never drift into opposite states.
+void HideInstance() {
+  if (g_window && IsWindowVisible(g_window)) {
     ShowWindow(g_window, SW_HIDE);
+  }
+}
+
+// Only one copy comes back holding the keyboard (`focus`); several windows activating at once
+// would fight over the foreground and leave none of them ready to type.
+void ShowInstance(bool focus) {
+  if (!g_window) {
     return;
   }
   ShowWindow(g_window, SW_SHOWNA);
   SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (g_controller) {
+    // The engine was painting a window nobody could see: handing it the bounds again is what makes
+    // it draw on the way back instead of at the first resize.
+    RECT bounds = {};
+    GetClientRect(g_window, &bounds);
+    g_controller->put_Bounds(bounds);
+    g_controller->put_IsVisible(TRUE);
+  }
+  if (!focus) {
+    return;
+  }
   if (!SetForegroundWindow(g_window)) {
     // Windows only hands the foreground to the process that owns the current input, and the chord
     // was typed while another app had it. Borrowing that thread's input state is what gets the
@@ -417,7 +440,7 @@ void ToggleHidden() {
   }
 }
 
-void HandleHotkey(UINT id) {
+void HandleHotkey(UINT id, LPARAM data) {
   if (id == kHotkeyBar) {
     ShowBar();
   } else if (id == kHotkeyQuit) {
@@ -429,7 +452,11 @@ void HandleHotkey(UINT id) {
       RunInPage(L"history.back()");
     }
   } else if (id == kHotkeyHide) {
-    ToggleHidden();
+    ToggleAllInstances();
+  } else if (id == kCommandHideAll) {
+    HideInstance();
+  } else if (id == kCommandShowAll) {
+    ShowInstance(data != 0);
   }
 }
 
@@ -457,6 +484,70 @@ constexpr HotkeyChord kHotkeys[] = {
     {kHotkeyKeyC, kHotkeyHide},
 };
 constexpr int kHotkeyCount = 5;
+
+// Only one copy of the app drives Ctrl+Alt+C. The named object is the arbiter: whoever creates it
+// owns the chord, and a copy started later takes it over once the previous owner has exited.
+constexpr wchar_t kChordOwner[] = L"TinyBrowserChordOwner";
+HANDLE g_chordOwner = nullptr;
+
+bool WeOwnTheChord() {
+  if (g_chordOwner) {
+    return true;
+  }
+  HANDLE created = CreateMutexW(nullptr, FALSE, kChordOwner);
+  if (!created) {
+    return false;
+  }
+  if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(created);
+    return false;
+  }
+  g_chordOwner = created;
+  return true;
+}
+
+// Every open copy, hidden ones included -- a hidden window is still a window, and it is exactly
+// the one that has to come back. The visibility read comes from the same pass, before anything is
+// touched, so the decision does not change halfway through hiding or showing them.
+constexpr int kMaxInstances = 16;
+HWND g_instances[kMaxInstances] = {};
+int g_instanceTotal = 0;
+bool g_anyInstanceVisible = false;
+
+void CollectInstances() {
+  g_instanceTotal = 0;
+  g_anyInstanceVisible = false;
+  EnumWindows(
+      [](HWND window, LPARAM) -> BOOL {
+        wchar_t name[64] = {};
+        if (GetClassNameW(window, name, 64) <= 0 || std::wcscmp(name, kWindowClass) != 0) {
+          return TRUE;
+        }
+        if (IsWindowVisible(window)) {
+          g_anyInstanceVisible = true;
+        }
+        if (g_instanceTotal < kMaxInstances) {
+          g_instances[g_instanceTotal++] = window;
+        }
+        return TRUE;
+      },
+      0);
+}
+
+// Ctrl+Alt+C acts on the whole app: one press hides every copy, the next brings every copy back.
+// The direction comes from what is on screen at that moment -- any copy visible means hide, none
+// visible means show -- so a mixed state repairs itself instead of each window flipping its own.
+void ToggleAllInstances() {
+  if (!g_window) {
+    return;
+  }
+  CollectInstances();
+  const UINT command = g_anyInstanceVisible ? kCommandHideAll : kCommandShowAll;
+  for (int i = 0; i < g_instanceTotal; ++i) {
+    const LPARAM focus = (command == kCommandShowAll && g_instances[i] == g_window) ? 1 : 0;
+    PostMessageW(g_instances[i], kHotkeyMessage, command, focus);
+  }
+}
 
 bool g_ctrlDown = false;
 bool g_altDown = false;
@@ -499,21 +590,6 @@ bool HotkeysApplyHere() {
   return g_instanceCount <= 1;
 }
 
-// A hidden window is nobody's foreground window, so the rule above would leave it unreachable.
-// While hidden it answers to the reveal chord alone, and only when no other instance is in front:
-// otherwise hiding one window would also pull the other one out of hiding.
-bool RevealAppliesHere() {
-  const HWND front = GetForegroundWindow();
-  if (!front) {
-    return true;
-  }
-  wchar_t name[64] = {};
-  if (GetClassNameW(front, name, 64) <= 0) {
-    return true;
-  }
-  return std::wcscmp(name, kWindowClass) != 0;
-}
-
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
@@ -544,10 +620,23 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
         down[i] = false;
       } else if (!down[i]) {  // ignore auto-repeat
         down[i] = true;
-        const bool hidden = g_window && !IsWindowVisible(g_window);
-        const bool applies = hidden ? (chord.id == kHotkeyHide && RevealAppliesHere())
-                                    : HotkeysApplyHere();
-        if (applies && HotkeyChordPressed(chord.key)) {
+        if (!HotkeyChordPressed(chord.key)) {
+          break;
+        }
+        if (chord.id == kHotkeyHide) {
+          // App-wide, so it no longer depends on which copy is in front. The hook chain stops at
+          // the first hook that swallows the key, so a copy that does not own the chord must let it
+          // through: swallowing it here would hide the press from the owner and nothing would
+          // happen at all.
+          if (WeOwnTheChord()) {
+            PostMessageW(g_window, kHotkeyMessage, kHotkeyHide, 0);
+            return 1;
+          }
+          break;
+        }
+        // The per-window chords keep their rule, and a hidden window stays deaf to them: acting on
+        // something nobody can see reads as a shortcut that does nothing.
+        if (IsWindowVisible(g_window) && HotkeysApplyHere()) {
           // Only post from here: the hook must return fast or Windows drops it.
           PostMessageW(g_window, kHotkeyMessage, chord.id, 0);
           return 1;
@@ -1239,7 +1328,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       }
       return 0;
     case kHotkeyMessage:
-      HandleHotkey((UINT)wparam);
+      HandleHotkey((UINT)wparam, lparam);
       return 0;
     case WM_SETFOCUS:
       if (g_controller) {
@@ -1259,6 +1348,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (g_mouseHook) {
         UnhookWindowsHookEx(g_mouseHook);
         g_mouseHook = nullptr;
+      }
+      if (g_chordOwner) {
+        CloseHandle(g_chordOwner);  // frees the name so another copy can take the chord over
+        g_chordOwner = nullptr;
       }
       PostQuitMessage(0);
       return 0;
