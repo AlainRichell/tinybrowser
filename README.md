@@ -22,6 +22,8 @@ se copia a cualquier PC con Windows y anda.
   escalan: sus controles mantienen el mismo tamaño, tenga la ventana el tamaño que tenga.
 - `Ctrl+Alt+S` vuelve a la barra desde cualquier página, `Ctrl+Alt+Z` va atrás, `Ctrl+Alt+D` duplica
   en otra ventana y `Ctrl+Alt+X` cierra.
+- `Ctrl+Alt+C` la oculta: sale de la pantalla y de la barra de tareas, y el mismo `Ctrl+Alt+C` la
+  vuelve a mostrar. Es la única forma de ocultarla y de traerla de vuelta.
 - El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
   La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
 - Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el

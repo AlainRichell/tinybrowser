@@ -57,6 +57,7 @@ constexpr UINT kHotkeyBar = 1;        // Ctrl+Alt+S
 constexpr UINT kHotkeyQuit = 2;       // Ctrl+Alt+X
 constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
 constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
+constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
@@ -126,6 +127,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
 <div><span class="k">Ctrl+Alt+D</span> duplicar</div>
 <div><span class="k">Ctrl+Alt+Z</span> atr&aacute;s</div>
+<div><span class="k">Ctrl+Alt+C</span> ocultar</div>
 <div><span class="k">Ctrl+Alt+X</span> cerrar</div>
 <div><span class="k">Alt+arrastrar</span> mover</div>
 <div id="closepanel">clic para cerrar</div>
@@ -385,6 +387,36 @@ void RunInPage(const wchar_t* script) {
 
 void DuplicateInNewInstance();  // defined with the placement helpers below
 
+// Ctrl+Alt+C is the only way in and out of hiding: a hidden window leaves the taskbar and the
+// z-order, so nothing else on screen could bring it back.
+void ToggleHidden() {
+  if (!g_window) {
+    return;
+  }
+  if (IsWindowVisible(g_window)) {
+    ShowWindow(g_window, SW_HIDE);
+    return;
+  }
+  ShowWindow(g_window, SW_SHOWNA);
+  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (!SetForegroundWindow(g_window)) {
+    // Windows only hands the foreground to the process that owns the current input, and the chord
+    // was typed while another app had it. Borrowing that thread's input state is what gets the
+    // window back in front, ready to type, instead of showing up behind the keyboard focus.
+    const HWND front = GetForegroundWindow();
+    const DWORD frontThread = front ? GetWindowThreadProcessId(front, nullptr) : 0;
+    const DWORD ourThread = GetCurrentThreadId();
+    if (frontThread && frontThread != ourThread && AttachThreadInput(frontThread, ourThread, TRUE)) {
+      SetForegroundWindow(g_window);
+      AttachThreadInput(frontThread, ourThread, FALSE);
+    }
+  }
+  SetFocus(g_window);
+  if (g_controller) {
+    g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+  }
+}
+
 void HandleHotkey(UINT id) {
   if (id == kHotkeyBar) {
     ShowBar();
@@ -396,18 +428,22 @@ void HandleHotkey(UINT id) {
     if (!g_url.empty()) {
       RunInPage(L"history.back()");
     }
+  } else if (id == kHotkeyHide) {
+    ToggleHidden();
   }
 }
 
 // Global shortcuts through a low-level keyboard hook: RegisterHotKey registered fine but
 // never fired for this window, and the hook is what every global-shortcut tool uses.
 // Virtual-key codes for letters are the uppercase character values: 'S' = 0x53, 'X' = 0x58,
-// 'D' = 0x44, 'Z' = 0x5A. Registering the lowercase values is accepted but never matches.
+// 'D' = 0x44, 'Z' = 0x5A, 'C' = 0x43. Registering the lowercase values is accepted but never
+// matches.
 constexpr UINT kHotkeyMessage = WM_APP + 1;
 constexpr UINT kHotkeyKeyS = L'S';
 constexpr UINT kHotkeyKeyX = L'X';
 constexpr UINT kHotkeyKeyD = L'D';
 constexpr UINT kHotkeyKeyZ = L'Z';
+constexpr UINT kHotkeyKeyC = L'C';
 
 struct HotkeyChord {
   UINT key;
@@ -418,8 +454,9 @@ constexpr HotkeyChord kHotkeys[] = {
     {kHotkeyKeyX, kHotkeyQuit},
     {kHotkeyKeyD, kHotkeyDuplicate},
     {kHotkeyKeyZ, kHotkeyBack},
+    {kHotkeyKeyC, kHotkeyHide},
 };
-constexpr int kHotkeyCount = 4;
+constexpr int kHotkeyCount = 5;
 
 bool g_ctrlDown = false;
 bool g_altDown = false;
@@ -462,6 +499,21 @@ bool HotkeysApplyHere() {
   return g_instanceCount <= 1;
 }
 
+// A hidden window is nobody's foreground window, so the rule above would leave it unreachable.
+// While hidden it answers to the reveal chord alone, and only when no other instance is in front:
+// otherwise hiding one window would also pull the other one out of hiding.
+bool RevealAppliesHere() {
+  const HWND front = GetForegroundWindow();
+  if (!front) {
+    return true;
+  }
+  wchar_t name[64] = {};
+  if (GetClassNameW(front, name, 64) <= 0) {
+    return true;
+  }
+  return std::wcscmp(name, kWindowClass) != 0;
+}
+
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
@@ -492,7 +544,10 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
         down[i] = false;
       } else if (!down[i]) {  // ignore auto-repeat
         down[i] = true;
-        if (HotkeyChordPressed(chord.key) && HotkeysApplyHere()) {
+        const bool hidden = g_window && !IsWindowVisible(g_window);
+        const bool applies = hidden ? (chord.id == kHotkeyHide && RevealAppliesHere())
+                                    : HotkeysApplyHere();
+        if (applies && HotkeyChordPressed(chord.key)) {
           // Only post from here: the hook must return fast or Windows drops it.
           PostMessageW(g_window, kHotkeyMessage, chord.id, 0);
           return 1;
@@ -648,6 +703,15 @@ void MoveTo(POINT point) {
 // scrollbar, and during a drag nothing else on the system reacts.
 LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION && g_window) {
+    // A hidden window must not eat anything: its rectangle is still there, so the press and hover
+    // logic below would swallow clicks over a piece of desktop nobody can see, and a drag that was
+    // in progress when it hid would keep moving it.
+    if (!IsWindowVisible(g_window)) {
+      g_dragActive = false;
+      g_dragMoves = false;
+      g_resizeEdge[0] = 0;
+      return CallNextHookEx(nullptr, code, wparam, lparam);
+    }
     const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
     const POINT point = mouse->pt;
     if (wparam == WM_MOUSEMOVE) {
