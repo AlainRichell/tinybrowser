@@ -43,8 +43,11 @@ se copia a cualquier PC con Windows y anda.
 - Los enlaces que abren pestaña nueva se cargan en la misma ventana.
 - **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
   pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
-- El botón de los cuadraditos de la barra, o `Ctrl+Alt+D`, abre la página actual en **otra ventana**:
-  hereda el tamaño y aparece corrida unos píxeles para no tapar la original.
+- El botón de los cuadraditos de la barra, o `Ctrl+Alt+D`, abre la página actual en **otra ventana**
+  del mismo tamaño, pegada a las que ya hay y nunca encima de otra: si el conjunto tiene un hueco
+  (una L, un cuadrado al que le falta una celda) la nueva cae justo ahí; si no, en el lado libre más
+  cercano a la ventana desde la que duplicaste, prefiriendo lo que deje el grupo rectangular antes
+  que una fila larga. Si no queda lugar en la pantalla, abre sobre la original.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.

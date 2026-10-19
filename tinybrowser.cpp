@@ -1112,7 +1112,176 @@ void FitAndPlace() {
   SetWindowPos(g_window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-// A duplicate opens the same page beside this one: same size, shifted a bit so it is visible.
+// Where the next duplicate goes. Each open copy reserves one window-sized "ghost" area on each of
+// its four sides: an area that runs into another copy means that side has no room and is dropped,
+// and when the areas of two different copies land on the same spot it means both have room to grow
+// there -- the spot earns a point per extra area, so the hole in an L-shape wins over making a row
+// longer. Ties go to the spot nearest the window being duplicated, then to the one that leaves the
+// group closest to a whole rectangle, and the side order last, so the same layout always gives the
+// same answer.
+//
+// Where the points run out (a plain row has no hole in it) distance alone would keep extending that
+// row for ever, because every spot beside it is equally near: the rectangle test is what starts a
+// second row instead. Simulated from one window, the nine duplicates that follow make 11, an L, a
+// full 2x2, 2x3, 3x3 -- never a row of four.
+struct Spot {
+  RECT rect;
+  int points;
+  long long distance;  // squared gap to the window being duplicated, 0 when touching it
+  long long balance;   // how far the group would be from a whole rectangle of windows
+  long long growth;    // how much area the group would gain
+  int side;            // 0 right, 1 down, 2 left, 3 up
+};
+
+constexpr int kSides = 4;
+constexpr int kMaxSpots = kMaxInstances * kSides;
+
+bool Overlaps(const RECT& a, const RECT& b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+long long Area(const RECT& rect) {
+  return (long long)(rect.right - rect.left) * (long long)(rect.bottom - rect.top);
+}
+
+// A duplicate is born on the screen, not under the taskbar: only the free area of the monitor the
+// spot lands on counts as room.
+RECT WorkAreaNear(const POINT& point) {
+  MONITORINFO info = {};
+  info.cbSize = sizeof(info);
+  if (GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &info)) {
+    return info.rcWork;
+  }
+  RECT desktop = {};
+  DesktopBounds(&desktop);
+  return desktop;
+}
+
+long long GapTo(const RECT& a, const RECT& b) {
+  const long long gapX = a.left > b.right ? a.left - b.right : (b.left > a.right ? b.left - a.right : 0);
+  const long long gapY = a.top > b.bottom ? a.top - b.bottom : (b.top > a.bottom ? b.top - a.bottom : 0);
+  return gapX * gapX + gapY * gapY;
+}
+
+// Points first (that is the hole), then the spot closest to the window being duplicated, then the
+// one that leaves the group closest to a whole rectangle of windows, then the least added area,
+// and the side order last so the same layout always gives the same window. Distance before balance
+// matters: growing beside the window you duplicated is what the user asked for, and a row only
+// keeps growing when no closer spot makes the group more of a rectangle.
+bool PreferSpot(const Spot& a, const Spot& b) {
+  if (a.points != b.points) return a.points > b.points;
+  if (a.distance != b.distance) return a.distance < b.distance;
+  if (a.balance != b.balance) return a.balance < b.balance;
+  if (a.growth != b.growth) return a.growth < b.growth;
+  return a.side < b.side;
+}
+
+// Walks every open copy, one candidate per side, and keeps the best one. False when the screen has
+// no room left beside any copy.
+bool FindDuplicateSpot(RECT* spot) {
+  RECT source = {};
+  if (!g_window || !GetWindowRect(g_window, &source)) {
+    return false;
+  }
+  const int width = source.right - source.left;
+  const int height = source.bottom - source.top;
+
+  CollectInstances();
+  RECT windows[kMaxInstances] = {};
+  int count = 0;
+  RECT group = {};  // what the open copies cover between them
+  for (int i = 0; i < g_instanceTotal; ++i) {
+    RECT rect = {};
+    if (!GetWindowRect(g_instances[i], &rect)) {
+      continue;
+    }
+    windows[count++] = rect;
+    if (count == 1) {
+      group = rect;
+      continue;
+    }
+    if (rect.left < group.left) group.left = rect.left;
+    if (rect.top < group.top) group.top = rect.top;
+    if (rect.right > group.right) group.right = rect.right;
+    if (rect.bottom > group.bottom) group.bottom = rect.bottom;
+  }
+  if (count == 0) {
+    return false;
+  }
+
+  const long long groupArea = Area(group);
+  Spot spots[kMaxSpots] = {};
+  int spotCount = 0;
+  for (int i = 0; i < count; ++i) {
+    const RECT& peer = windows[i];
+    const RECT sides[kSides] = {
+        {peer.right, peer.top, peer.right + width, peer.top + height},
+        {peer.left, peer.bottom, peer.left + width, peer.bottom + height},
+        {peer.left - width, peer.top, peer.left, peer.top + height},
+        {peer.left, peer.top - height, peer.left + width, peer.top},
+    };
+    for (int side = 0; side < kSides && spotCount < kMaxSpots; ++side) {
+      const RECT& candidate = sides[side];
+      const POINT middle = {(candidate.left + candidate.right) / 2,
+                            (candidate.top + candidate.bottom) / 2};
+      const RECT work = WorkAreaNear(middle);
+      if (candidate.left < work.left || candidate.top < work.top ||
+          candidate.right > work.right || candidate.bottom > work.bottom) {
+        continue;  // off the screen: no space on that side
+      }
+      bool blocked = false;
+      for (int j = 0; j < count; ++j) {
+        if (Overlaps(candidate, windows[j])) {
+          blocked = true;  // the ghost area hit a window, so that side does not count
+          break;
+        }
+      }
+      if (blocked) {
+        continue;
+      }
+      Spot& entry = spots[spotCount++];
+      entry.rect = candidate;
+      entry.side = side;
+      RECT grown = {candidate.left < group.left ? candidate.left : group.left,
+                    candidate.top < group.top ? candidate.top : group.top,
+                    candidate.right > group.right ? candidate.right : group.right,
+                    candidate.bottom > group.bottom ? candidate.bottom : group.bottom};
+      entry.growth = Area(grown) - groupArea;
+      const long long grownWidth = grown.right - grown.left;
+      const long long grownHeight = grown.bottom - grown.top;
+      // Zero when the bounding box is exactly N windows wide by M tall; the smaller the residue,
+      // the closer the group is to a filled rectangle instead of a long row or column.
+      entry.balance = grownWidth * height - grownHeight * width;
+      if (entry.balance < 0) {
+        entry.balance = -entry.balance;
+      }
+      entry.distance = GapTo(candidate, source);
+    }
+  }
+  if (spotCount == 0) {
+    return false;
+  }
+
+  for (int i = 0; i < spotCount; ++i) {
+    for (int j = 0; j < spotCount; ++j) {
+      if (i != j && Overlaps(spots[i].rect, spots[j].rect)) {
+        ++spots[i].points;
+      }
+    }
+  }
+
+  int best = 0;
+  for (int i = 1; i < spotCount; ++i) {
+    if (PreferSpot(spots[i], spots[best])) {
+      best = i;
+    }
+  }
+  *spot = spots[best].rect;
+  return true;
+}
+
+// A duplicate opens the same page as the window it came from, in the first gap the group layout
+// leaves free and in that window's size.
 void DuplicateInNewInstance() {
   if (!g_window || g_url.empty()) {
     return;
@@ -1125,22 +1294,12 @@ void DuplicateInNewInstance() {
   if (!GetWindowRect(g_window, &rect)) {
     return;
   }
-  RECT work = {};
-  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
-    work.left = 0;
-    work.top = 0;
-  }
-  int x = rect.left - kMargin;
-  int y = rect.top - kMargin;
-  if (x < work.left) {
-    x = work.left;
-  }
-  if (y < work.top) {
-    y = work.top;
-  }
+  // No room left beside any copy: it opens over this one, still visible, instead of doing nothing.
+  RECT spot = rect;
+  FindDuplicateSpot(&spot);
   wchar_t arguments[900] = {};
-  wsprintfW(arguments, L"--place %d %d %d %d \"%s\"", x, y, rect.right - rect.left,
-            rect.bottom - rect.top, g_url.c_str());
+  wsprintfW(arguments, L"--place %d %d %d %d \"%s\"", spot.left, spot.top,
+            spot.right - spot.left, spot.bottom - spot.top, g_url.c_str());
   ShellExecuteW(nullptr, L"open", exe, arguments, nullptr, SW_SHOWNORMAL);
 }
 
