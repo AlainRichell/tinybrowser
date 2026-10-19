@@ -67,9 +67,10 @@ al lado del exe, así que valen para todas las ventanas y siguen ahí la próxim
   el borde se detiene. Las ventanas que ya estaban superpuestas antes de activar la opción se quedan
   como están; si las separás, ya no se pueden volver a superponer.
 - **Al arrastrar, empujar otras** (apagado de fábrica): en vez de detenerse, la ventana arrastrada
-  corre a la que tiene adelante, siempre en ángulos rectos y en cascada si hay más de una; cuando
-  alguna no tiene lugar para correrse, la que arrastraste se detiene como si la opción estuviera
-  apagada. Necesita la opción de arriba: sin "no solapar" no tiene sentido, por eso queda
+  corre a la que choca, siempre en ángulos rectos y por el lado que le toca: la empujada sale hacia
+  donde ya está respecto de la otra y por donde menos tiene que moverse, nunca por donde va el mouse.
+  Si choca con varias, se corren en cascada, cada una por su propio lado. Cuando alguna no tiene
+  lugar para correrse, la que arrastraste se detiene como si la opción estuviera apagada. Necesita la opción de arriba: sin "no solapar" no tiene sentido, por eso queda
   deshabilitada en su lugar mientras aquella está apagada. El redimensionado empuja igual.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
 

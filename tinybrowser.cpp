@@ -92,8 +92,8 @@ std::wstring g_startTarget;  // URL given on the command line, if any
 RECT g_placedRect = {};        // --place x y width height, when a duplicate asks for its spot
 bool g_hasPlacedRect = false;
 wchar_t g_resizeEdge[3] = {};  // edges being dragged ("", "n", "se", ...), empty when idle
-RECT g_resizeAnchor = {};      // window rectangle the drag started from
-POINT g_dragStart = {};        // pointer position when the drag began
+POINT g_lastMove = {};         // pointer position of the previous step: a step is a step, so a
+                               // window held back by a neighbour never stores up distance
 bool g_dragActive = false;     // a hook-driven drag is in progress
 bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
@@ -1013,10 +1013,61 @@ RECT ConstrainResize(const RECT& from, const RECT& to) {
   return result;
 }
 
-// Moves the neighbours out of the way, always in right angles: a pushed window keeps its own size and
-// travels along the axis the gesture is advancing on, pushing whatever it finds in turn. When any of
-// them would end up off the desktop the step is refused and the caller falls back to stopping.
-bool PushNeighbours(const RECT& target, bool horizontal, bool forward) {
+// Which way a window that gets hit should go, and how far. The direction does not come from the
+// mouse: it comes from where the two windows are on screen -- the pushed one leaves by the side it
+// is already on -- and the axis is the one that needs the least travel, so a corner contact is a
+// nudge instead of a shove. Both are right angles, never diagonals.
+struct Escape {
+  bool horizontal;
+  bool forward;  // right or down
+  int travel;
+};
+
+Escape ChooseEscape(const RECT& rect, const RECT& mover, int forcedAxis) {
+  const int overlapX = (rect.right < mover.right ? rect.right : mover.right) -
+                       (rect.left > mover.left ? rect.left : mover.left);
+  const int overlapY = (rect.bottom < mover.bottom ? rect.bottom : mover.bottom) -
+                       (rect.top > mover.top ? rect.top : mover.top);
+  Escape escape = {};
+  escape.horizontal = forcedAxis >= 0 ? forcedAxis == 1 : overlapX <= overlapY;
+  const int rectCentreX = (rect.left + rect.right) / 2;
+  const int rectCentreY = (rect.top + rect.bottom) / 2;
+  if (escape.horizontal) {
+    const int moverCentreX = (mover.left + mover.right) / 2;
+    escape.forward = rectCentreX != moverCentreX
+                         ? rectCentreX > moverCentreX
+                         : mover.right - rect.left <= rect.right - mover.left;
+    escape.travel = escape.forward ? mover.right + kWindowGap - rect.left
+                                   : rect.right - (mover.left - kWindowGap);
+  } else {
+    const int moverCentreY = (mover.top + mover.bottom) / 2;
+    escape.forward = rectCentreY != moverCentreY
+                         ? rectCentreY > moverCentreY
+                         : mover.bottom - rect.top <= rect.bottom - mover.top;
+    escape.travel = escape.forward ? mover.bottom + kWindowGap - rect.top
+                                   : rect.bottom - (mover.top - kWindowGap);
+  }
+  return escape;
+}
+
+RECT AfterEscape(const RECT& rect, const Escape& escape) {
+  RECT moved = rect;
+  const int shift = escape.forward ? escape.travel : -escape.travel;
+  if (escape.horizontal) {
+    moved.left += shift;
+    moved.right += shift;
+  } else {
+    moved.top += shift;
+    moved.bottom += shift;
+  }
+  return moved;
+}
+
+// Moves the neighbours out of the way of a rect that has to stay clear, following the collision
+// graph: every window it moves becomes a mover in turn, and each contact is resolved by its own
+// pair of positions. Nothing is written until the whole chain leaves the destination clear, so a
+// push that cannot finish changes nothing and the caller simply stops.
+bool PushNeighbours(const RECT& target) {
   int index[kMaxInstances] = {};
   RECT pending[kMaxInstances] = {};
   int count = 0;
@@ -1027,40 +1078,42 @@ bool PushNeighbours(const RECT& target, bool horizontal, bool forward) {
     ++count;
   }
 
-  // Each barrier remembers which window it came from: a pushed window must not push itself again,
-  // which would send it walking to the edge of the screen on every step.
-  RECT barriers[kMaxInstances + 1] = {};
+  RECT movers[kMaxInstances + 1] = {};
   int owner[kMaxInstances + 1] = {};
-  int barrierCount = 0;
-  barriers[barrierCount] = target;
-  owner[barrierCount] = -1;  // the window being dragged belongs to nobody
-  ++barrierCount;
+  int moverCount = 1;
+  movers[0] = target;
+  owner[0] = -1;  // the window being dragged belongs to nobody
 
-  for (int b = 0; b < barrierCount; ++b) {
+  for (int m = 0; m < moverCount; ++m) {
     for (int i = 0; i < count; ++i) {
-      if (owner[b] == i) continue;
-      if (!Overlaps(pending[i], barriers[b])) continue;
-      const int shift =
-          horizontal
-              ? (forward ? barriers[b].right + kWindowGap - pending[i].left
-                         : pending[i].right - (barriers[b].left - kWindowGap))
-              : (forward ? barriers[b].bottom + kWindowGap - pending[i].top
-                         : pending[i].bottom - (barriers[b].top - kWindowGap));
-      if (shift <= 0) continue;
-      if (horizontal) {
-        pending[i].left += forward ? shift : -shift;
-        pending[i].right += forward ? shift : -shift;
-      } else {
-        pending[i].top += forward ? shift : -shift;
-        pending[i].bottom += forward ? shift : -shift;
+      if (owner[m] == i) continue;
+      if (!Overlaps(pending[i], movers[m])) continue;
+      const Escape shortest = ChooseEscape(pending[i], movers[m], -1);
+      RECT moved = AfterEscape(pending[i], shortest);
+      if (!InsideDesktop(moved)) {
+        // The shortest way out has no room here; the other axis may still have some.
+        moved = AfterEscape(pending[i], ChooseEscape(pending[i], movers[m], shortest.horizontal ? 0 : 1));
+        if (!InsideDesktop(moved)) {
+          return false;
+        }
       }
-      if (!InsideDesktop(pending[i])) {
-        return false;  // nothing has been moved yet, so the caller can still just stop
+      pending[i] = moved;
+      if (moverCount <= kMaxInstances) {
+        movers[moverCount] = moved;
+        owner[moverCount] = i;
+        ++moverCount;
       }
-      if (barrierCount <= kMaxInstances) {
-        barriers[barrierCount] = pending[i];
-        owner[barrierCount] = i;
-        ++barrierCount;
+    }
+  }
+
+  // The destination must end up clear of every one of them, and none of them may land on another.
+  for (int i = 0; i < count; ++i) {
+    if (Overlaps(target, pending[i])) {
+      return false;
+    }
+    for (int j = i + 1; j < count; ++j) {
+      if (Overlaps(pending[i], pending[j])) {
+        return false;
       }
     }
   }
@@ -1085,17 +1138,7 @@ RECT StepMove(const RECT& from, const RECT& to) {
   if (SameRect(allowed, to) || !g_pushOthers) {
     return allowed;
   }
-  const int dx = to.left - from.left;
-  const int dy = to.top - from.top;
-  const bool horizontalFirst = (dx >= 0 ? dx : -dx) >= (dy >= 0 ? dy : -dy);
-  if (horizontalFirst) {
-    if (dx != 0 && PushNeighbours(to, true, dx > 0)) return to;
-    if (dy != 0 && PushNeighbours(to, false, dy > 0)) return to;
-  } else {
-    if (dy != 0 && PushNeighbours(to, false, dy > 0)) return to;
-    if (dx != 0 && PushNeighbours(to, true, dx > 0)) return to;
-  }
-  return allowed;
+  return PushNeighbours(to) ? to : allowed;
 }
 
 RECT StepResize(const RECT& from, const RECT& to) {
@@ -1106,11 +1149,7 @@ RECT StepResize(const RECT& from, const RECT& to) {
   if (SameRect(allowed, to) || !g_pushOthers) {
     return allowed;
   }
-  if (std::wcschr(g_resizeEdge, L'e') && PushNeighbours(to, true, true)) return to;
-  if (std::wcschr(g_resizeEdge, L'w') && PushNeighbours(to, true, false)) return to;
-  if (std::wcschr(g_resizeEdge, L's') && PushNeighbours(to, false, true)) return to;
-  if (std::wcschr(g_resizeEdge, L'n') && PushNeighbours(to, false, false)) return to;
-  return allowed;
+  return PushNeighbours(to) ? to : allowed;
 }
 
 // Keeps a moved or dragged rectangle inside the desktop: past the edge it is invisible, which read
@@ -1143,12 +1182,13 @@ void ResizeTo(POINT point) {
   if (!GetWindowRect(g_window, &from)) {
     return;
   }
-  const int dx = point.x - g_dragStart.x;
-  const int dy = point.y - g_dragStart.y;
-  int left = g_resizeAnchor.left;
-  int top = g_resizeAnchor.top;
-  int right = g_resizeAnchor.right;
-  int bottom = g_resizeAnchor.bottom;
+  const int dx = point.x - g_lastMove.x;
+  const int dy = point.y - g_lastMove.y;
+  g_lastMove = point;
+  int left = from.left;
+  int top = from.top;
+  int right = from.right;
+  int bottom = from.bottom;
   if (std::wcschr(g_resizeEdge, L'e')) right += dx;
   if (std::wcschr(g_resizeEdge, L'w')) left += dx;
   if (std::wcschr(g_resizeEdge, L's')) bottom += dy;
@@ -1183,13 +1223,19 @@ void ResizeTo(POINT point) {
                target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+// One pointer delta per step. Anchoring the rectangle to the press would hand the whole distance
+// travelled while the window was held back to a single step the moment it came free, and everything
+// it pushed along the way jumped that far at once -- the "teleport" seen near a corner.
 void MoveTo(POINT point) {
   RECT from = {};
   if (!GetWindowRect(g_window, &from)) {
     return;
   }
-  int left = g_resizeAnchor.left + (point.x - g_dragStart.x);
-  int top = g_resizeAnchor.top + (point.y - g_dragStart.y);
+  const int stepX = point.x - g_lastMove.x;
+  const int stepY = point.y - g_lastMove.y;
+  g_lastMove = point;
+  int left = from.left + stepX;
+  int top = from.top + stepY;
   int right = left + (from.right - from.left);
   int bottom = top + (from.bottom - from.top);
   ClampToDesktop(&left, &top, &right, &bottom);
@@ -1257,10 +1303,7 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       if (!edges && !moves) {
         return CallNextHookEx(nullptr, code, wparam, lparam);
       }
-      if (!GetWindowRect(g_window, &g_resizeAnchor)) {
-        return CallNextHookEx(nullptr, code, wparam, lparam);
-      }
-      g_dragStart = point;
+      g_lastMove = point;
       g_dragActive = true;
       g_dragMoves = moves;
       EdgeChars(moves ? 0 : edges);
