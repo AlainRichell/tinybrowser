@@ -61,7 +61,8 @@ se copia a cualquier PC con Windows y anda.
   píxel: si el conjunto tiene un hueco (una L, un cuadrado al que le falta una celda) la nueva cae
   justo ahí; si no, en el lado libre más cercano a la ventana desde la que duplicaste, prefiriendo lo
   que deje el grupo rectangular antes que una fila larga. Si no queda ningún lugar libre, no abre
-  nada: no hay copias superpuestas.
+  nada: no hay copias superpuestas. La copia se lleva lo que esa ventana estaba mostrando: los colores
+  transparentados y, si el rango venía de un `.to`, ese rango también.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
 

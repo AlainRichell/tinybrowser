@@ -2607,8 +2607,9 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
   return true;
 }
 
-// A duplicate opens the same page as the window it came from, in the first gap the group layout
-// leaves free and in that window's size.
+// A duplicate is the same window somewhere else: it opens the same page in the first gap the group
+// layout leaves free, in that window's size, and carrying what that window was showing -- the colours
+// it had keyed and, when the margin came from a .to, that margin too. The address goes last, quoted.
 void DuplicateInNewInstance() {
   if (!g_window || g_url.empty()) {
     return;
@@ -2627,10 +2628,27 @@ void DuplicateInNewInstance() {
   if (!FindDuplicateSpot(&spot, kWindowGap) && !FindDuplicateSpot(&spot, 0)) {
     return;
   }
-  wchar_t arguments[900] = {};
-  wsprintfW(arguments, L"--place %d %d %d %d \"%s\"", spot.left, spot.top,
-            spot.right - spot.left, spot.bottom - spot.top, g_url.c_str());
-  ShellExecuteW(nullptr, L"open", exe, arguments, nullptr, SW_SHOWNORMAL);
+  wchar_t numbers[128] = {};
+  wsprintfW(numbers, L"--place %d %d %d %d", spot.left, spot.top, spot.right - spot.left,
+            spot.bottom - spot.top);
+  std::wstring arguments(numbers);
+  if (!g_keyColours.empty()) {
+    arguments += L" --key ";
+    for (size_t i = 0; i < g_keyColours.size(); ++i) {
+      wchar_t colour[16] = {};
+      wsprintfW(colour, i ? L",%u" : L"%u", (unsigned)g_keyColours[i]);
+      arguments += colour;
+    }
+  }
+  // Only when it is not the app-wide one: otherwise the copy reads the same number from the options
+  // file, and marking it local would freeze it there for no reason.
+  if (g_keyRangeLocal) {
+    wchar_t range[16] = {};
+    wsprintfW(range, L" --range %d", g_keyRange);
+    arguments += range;
+  }
+  arguments += L" \"" + g_url + L"\"";
+  ShellExecuteW(nullptr, L"open", exe, arguments.c_str(), nullptr, SW_SHOWNORMAL);
 }
 
 
@@ -3052,23 +3070,50 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // after moving the exe, double-clicking one of those files still opens this build.
   EnsureAssociation();
   const std::wstring arguments = Trim(commandLine ? commandLine : L"");
-  if (arguments.compare(0, 8, L"--place ") == 0) {
-    // A duplicate asks for its own rectangle so the copy does not land on top of the original.
-    const wchar_t* rest = arguments.c_str() + 8;
-    wchar_t* end = nullptr;
-    const long values[4] = {std::wcstol(rest, &end, 10),
-                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0,
-                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0,
-                            end && *end == L' ' ? std::wcstol(end + 1, &end, 10) : 0};
-    g_placedRect.left = (int)values[0];
-    g_placedRect.top = (int)values[1];
-    g_placedRect.right = (int)(values[0] + values[2]);
-    g_placedRect.bottom = (int)(values[1] + values[3]);
-    g_hasPlacedRect = values[2] > 0 && values[3] > 0;
-    g_startTarget = Trim(end ? std::wstring(end) : std::wstring());
-  } else {
-    g_startTarget = arguments;
+  // Options in front of the address, all optional and only sent by a duplicate: --place x y width
+  // height (the spot it was given), --key (the colours it had keyed, as the same decimal list the .to
+  // files use) and --range (its margin, only when that one was not the app-wide value).
+  std::wstring rest = arguments;
+  while (StartsWith(rest, L"--")) {
+    const size_t gap = rest.find(L' ');
+    if (gap == std::wstring::npos) {
+      break;  // an option with no value: whatever is left is the address
+    }
+    const std::wstring option = rest.substr(0, gap);
+    rest = Trim(rest.substr(gap + 1));
+    if (option == L"--place") {
+      const wchar_t* at = rest.c_str();
+      long values[4] = {};
+      for (int i = 0; i < 4; ++i) {
+        wchar_t* end = nullptr;
+        values[i] = std::wcstol(at, &end, 10);
+        if (end == at) {
+          break;
+        }
+        at = end;
+      }
+      g_placedRect.left = (int)values[0];
+      g_placedRect.top = (int)values[1];
+      g_placedRect.right = (int)(values[0] + values[2]);
+      g_placedRect.bottom = (int)(values[1] + values[3]);
+      g_hasPlacedRect = values[2] > 0 && values[3] > 0;
+      rest = Trim(rest.substr((size_t)(at - rest.c_str())));
+    } else if (option == L"--key") {
+      const size_t end = rest.find(L' ');
+      const std::wstring list = end == std::wstring::npos ? rest : rest.substr(0, end);
+      ParseColourList(list.c_str(), &g_keyColours);
+      rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
+    } else if (option == L"--range") {
+      const long value = std::wcstol(rest.c_str(), nullptr, 10);
+      g_keyRange = (int)(value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value));
+      g_keyRangeLocal = true;  // the margin of the window that was duplicated, not this one's
+      const size_t end = rest.find(L' ');
+      rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
+    } else {
+      break;
+    }
   }
+  g_startTarget = Trim(rest);
   if (g_startTarget.size() >= 2 && g_startTarget.front() == L'"' && g_startTarget.back() == L'"') {
     g_startTarget = g_startTarget.substr(1, g_startTarget.size() - 2);
   }
