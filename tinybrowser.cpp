@@ -138,6 +138,7 @@ POINT g_lastMove = {};         // pointer position of the previous step: a step 
 bool g_dragActive = false;     // a hook-driven drag is in progress
 bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
+bool g_setupPanel = false;     // one-shot: the next bar comes up with the setup panel open
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
 double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
@@ -192,10 +193,21 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     width:9px;height:9px;margin-top:-2.5px;border-radius:50%;background:#4a90c2}
   #settings .value{flex:0 0 12px;text-align:right;color:#7fb3d5}
   #closepanel2{font-size:9px;color:#5b6b7d;margin-top:1px}
+  #setup{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:7;padding:3px 5px;
+    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.1;
+    color:#9db2c6;overflow:hidden}
+  #setup[hidden]{display:none}
+  #setup .title{color:#7fb3d5;margin-bottom:3px}
+  #setup button{flex:none;width:100%;height:18px;margin-bottom:3px;font-size:10px}
+  #setup label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
+  #setup input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;
+    accent-color:#4a90c2;cursor:pointer}
+  #setup input[type=checkbox]:disabled{cursor:default}
+  #setup .note{color:#5b6b7d;margin-top:3px}
 </style></head><body>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
-<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="reload" title="Reload"%DISABLED%>&#8635;</button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
+<div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
 <div id="brand">tinybrowser 2026</div>
 <div id="commands" hidden>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
@@ -216,6 +228,12 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <label class="range"><span>Rango del color</span><span class="value" id="keyrangevalue">%KEY_RANGE%</span></label>
 <input type="range" id="keyrange" min="0" max="40" step="1" value="%KEY_RANGE%">
 </div>
+<div id="setup"%SETUP_HIDDEN%>
+<div class="title">Instalaci&oacute;n</div>
+<button id="setupaction" data-cmd="%SETUP_COMMAND%">%SETUP_ACTION%</button>
+<label><input type="checkbox" id="desktopicon"%DESKTOP_CHECKED%%DESKTOP_DISABLED%><span>Icono en el escritorio</span></label>
+<div class="note">%SETUP_STATUS%</div>
+</div>
 <script>
 (function () {
   function send(message) { try { window.chrome.webview.postMessage(message); } catch (e) { } }
@@ -229,7 +247,6 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   };
   document.getElementById("back").onclick = function () { send("B"); };
   document.getElementById("fwd").onclick = function () { send("F"); };
-  document.getElementById("reload").onclick = function () { send("R"); };
   document.getElementById("close").onclick = function () { send("X"); };
 
   // Both panels cover the whole bar, so they fit at any window size, and only one is open at once.
@@ -237,11 +254,13 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   var settings = document.getElementById("settings");
   document.getElementById("help").onclick = function () {
     settings.hidden = true;
+    setupPanel.hidden = true;
     commands.hidden = !commands.hidden;
   };
   commands.onclick = function () { commands.hidden = true; };
   document.getElementById("options").onclick = function () {
     commands.hidden = true;
+    setupPanel.hidden = true;
     settings.hidden = !settings.hidden;
   };
   settings.onclick = function (e) {
@@ -249,7 +268,11 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     if (e.target === settings) { settings.hidden = true; }
   };
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") { commands.hidden = true; settings.hidden = true; }
+    if (e.key === "Escape") {
+      commands.hidden = true;
+      settings.hidden = true;
+      setupPanel.hidden = true;
+    }
   }, true);
 
   // The switches belong to the host: the page only reports the new value. Pushing needs the rule
@@ -267,6 +290,23 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   var keyRangeValue = document.getElementById("keyrangevalue");
   keyRange.oninput = function () { keyRangeValue.textContent = keyRange.value; };
   keyRange.onchange = function () { send("T" + keyRange.value); };
+
+  // The setup panel: the host does the work (copy the exe, the PATH, the .to association) and rebuilds
+  // the bar afterwards, so every label here shows the state the machine is really in.
+  var setupPanel = document.getElementById("setup");
+  document.getElementById("setupbtn").onclick = function () {
+    commands.hidden = true;
+    settings.hidden = true;
+    setupPanel.hidden = !setupPanel.hidden;
+  };
+  setupPanel.onclick = function (e) {
+    if (e.target === setupPanel) { setupPanel.hidden = true; }
+  };
+  var setupAction = document.getElementById("setupaction");
+  setupAction.onclick = function () { send(setupAction.getAttribute("data-cmd")); };
+  document.getElementById("desktopicon").onchange = function () {
+    send("K" + (this.checked ? "1" : "0"));
+  };
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
   // start inside the page: the grip reports pixel deltas and the host moves itself.
@@ -458,6 +498,19 @@ void ReplaceToken(std::wstring* html, const wchar_t* token, const wchar_t* value
   }
 }
 
+// The setup panel: copy this exe into the user's folder, put that folder on the PATH and point the
+// .to association at the copy. The bar asks about the installed copy on every redraw, so the readers
+// are here next to it.
+bool IsInstalled();
+bool FileExists(const std::wstring& path);
+std::wstring DesktopShortcutPath();
+bool EnsureAssociation();
+bool CreateDesktopShortcut();
+void RemoveDesktopShortcut();
+void RemoveAssociation();
+void DoInstall();
+void DoUninstall();
+
 void ShowBar() {
   if (!g_webview) {
     return;
@@ -482,6 +535,16 @@ void ShowBar() {
   ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
   // Pushing without the rule above it makes no sense, so it is disabled in place, not hidden.
   ReplaceToken(&html, L"%PUSH_DISABLED%", g_blockOverlap ? L"" : L" disabled");
+  // The setup panel speaks about the machine, not about this window, so every bar reads the same
+  // answer: which button it offers, whether the copy is there and whether the icon exists.
+  const bool installed = IsInstalled();
+  ReplaceToken(&html, L"%SETUP_HIDDEN%", g_setupPanel ? L"" : L" hidden");
+  g_setupPanel = false;
+  ReplaceToken(&html, L"%SETUP_ACTION%", installed ? L"Desinstalar" : L"Instalar");
+  ReplaceToken(&html, L"%SETUP_COMMAND%", installed ? L"U" : L"I");
+  ReplaceToken(&html, L"%SETUP_STATUS%", installed ? L"instalado" : L"sin instalar");
+  ReplaceToken(&html, L"%DESKTOP_CHECKED%", FileExists(DesktopShortcutPath()) ? L" checked" : L"");
+  ReplaceToken(&html, L"%DESKTOP_DISABLED%", installed ? L"" : L" disabled");
   g_showingBar = true;
   ResetFit();
   ResizeIfCanonical(kBarWidth, kBarHeight);
@@ -1838,14 +1901,24 @@ void OnBarCommand(const std::wstring& message) {
     case L'G': Navigate(message.substr(1)); break;
     case L'B': if (!g_url.empty()) RunInPage(L"history.back()"); break;
     case L'F': if (!g_url.empty()) RunInPage(L"history.forward()"); break;
-    // While the bar is on screen the current document is the bar itself, so "reload" has to mean
-    // the page we remember; reloading the bar would leave a blank window and no bar at all.
-    case L'R': if (!g_url.empty()) Navigate(g_url); break;
     case L'C': DuplicateInNewInstance(); break;
     // From the options panel: the switches themselves, and the note that they changed.
     case L'N': SetBlockOverlap(message.size() > 1 && message[1] == L'1'); break;
     case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
+    // From the setup panel: install, uninstall and the desktop icon. The bar is rebuilt so the panel
+    // comes back showing what the machine now holds.
+    case L'I': DoInstall(); g_setupPanel = true; ShowBar(); break;
+    case L'U': DoUninstall(); g_setupPanel = true; ShowBar(); break;
+    case L'K':
+      if (message.size() > 1 && message[1] == L'1') {
+        CreateDesktopShortcut();
+      } else {
+        RemoveDesktopShortcut();
+      }
+      g_setupPanel = true;
+      ShowBar();
+      break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
     case L'S': ShowBar(); break;
     case L'M': {
@@ -2308,6 +2381,260 @@ bool AskStateToOpen(wchar_t* path, DWORD size, const std::wstring& folder) {
   return picked == TRUE;
 }
 
+// Installing is copying this exe into the user's own folder, putting that folder on the PATH so the
+// command exists, and pointing the .to association at the copy. Every write goes to HKCU or to the
+// user's profile, so none of it needs admin rights and none of it touches other accounts.
+std::wstring CurrentExe() {
+  wchar_t path[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) {
+    return std::wstring();
+  }
+  return path;
+}
+
+// Under the vendor folder, and in a folder of its own: %LOCALAPPDATA%\tinybrowser is the WebView2
+// profile, which is logins and cookies, not the program.
+std::wstring InstallFolder() {
+  wchar_t base[MAX_PATH] = {};
+  if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) {
+    return std::wstring();
+  }
+  return std::wstring(base) + L"\\Unresolute\\tinybrowser";
+}
+
+// Named tiny.exe on purpose: Win+R looks for an executable on the PATH, and this is the name the
+// command is meant to have.
+std::wstring InstalledExe() {
+  const std::wstring folder = InstallFolder();
+  return folder.empty() ? std::wstring() : folder + L"\\tiny.exe";
+}
+
+bool FileExists(const std::wstring& path) {
+  return !path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool IsInstalled() { return FileExists(InstalledExe()); }
+
+std::wstring AssociationExe() { return IsInstalled() ? InstalledExe() : CurrentExe(); }
+
+std::wstring DesktopShortcutPath() {
+  wchar_t folder[MAX_PATH] = {};
+  if (FAILED(
+          SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, folder))) {
+    return std::wstring();
+  }
+  return std::wstring(folder) + L"\\tiny.lnk";
+}
+
+// Same folder written two ways: case does not matter on Windows, nor does a trailing separator.
+bool SamePath(const std::wstring& left, const std::wstring& right) {
+  std::wstring a = left;
+  std::wstring b = right;
+  while (!a.empty() && (a.back() == L'\\' || a.back() == L'/')) a.pop_back();
+  while (!b.empty() && (b.back() == L'\\' || b.back() == L'/')) b.pop_back();
+  return !a.empty() && lstrcmpiW(a.c_str(), b.c_str()) == 0;
+}
+
+// The user's own PATH, exactly as the shell reads it. The type travels along because a REG_EXPAND_SZ
+// has to stay one: writing it back as REG_SZ would expand away any %VAR% the user put in there.
+bool ReadUserPath(std::wstring* value, DWORD* type) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  DWORD bytes = 0;
+  DWORD kind = REG_SZ;
+  if (RegQueryValueExW(key, L"Path", nullptr, &kind, nullptr, &bytes) != ERROR_SUCCESS) {
+    RegCloseKey(key);
+    return false;
+  }
+  std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 2, 0);
+  const LSTATUS status = RegQueryValueExW(key, L"Path", nullptr, &kind,
+                                          reinterpret_cast<LPBYTE>(buffer.data()), &bytes);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS) {
+    return false;
+  }
+  *value = buffer.data();
+  *type = kind == REG_EXPAND_SZ ? REG_EXPAND_SZ : REG_SZ;
+  return true;
+}
+
+bool WriteUserPath(const std::wstring& value, DWORD type) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Environment", 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+                      nullptr) != ERROR_SUCCESS) {
+    return false;
+  }
+  const LSTATUS status =
+      RegSetValueExW(key, L"Path", 0, type, reinterpret_cast<const BYTE*>(value.c_str()),
+                     (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS) {
+    return false;
+  }
+  // Win+R and every shell started afterwards read the variable when they start: they only see the new
+  // value once Windows is told that the environment changed.
+  DWORD_PTR ignored = 0;
+  SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"Environment", SMTO_ABORTIFHUNG,
+                      1000, &ignored);
+  return true;
+}
+
+// The PATH text with exactly one folder added or removed, every other entry left as it was. Empty
+// entries go: they mean "the current directory" on the PATH, which is nothing anyone wants, and the
+// rebuild is where they tend to pile up.
+std::wstring RebuildPath(const std::wstring& path, const std::wstring& entry, bool add) {
+  std::wstring rebuilt;
+  size_t at = 0;
+  while (at <= path.size()) {
+    const size_t separator = path.find(L';', at);
+    const size_t length = separator == std::wstring::npos ? std::wstring::npos : separator - at;
+    const std::wstring item = path.substr(at, length);
+    if (!item.empty() && !SamePath(item, entry)) {
+      if (!rebuilt.empty()) {
+        rebuilt += L';';
+      }
+      rebuilt += item;
+    }
+    if (separator == std::wstring::npos) {
+      break;
+    }
+    at = separator + 1;
+  }
+  if (add) {
+    if (!rebuilt.empty()) {
+      rebuilt += L';';
+    }
+    rebuilt += entry;
+  }
+  return rebuilt;
+}
+
+bool SetPathEntry(const std::wstring& entry, bool add) {
+  std::wstring path;
+  DWORD type = REG_SZ;
+  ReadUserPath(&path, &type);
+  const std::wstring rebuilt = RebuildPath(path, entry, add);
+  if (rebuilt == path) {
+    return true;
+  }
+  return WriteUserPath(rebuilt, type);
+}
+
+bool CreateDesktopShortcut() {
+  const std::wstring target = InstalledExe();
+  const std::wstring path = DesktopShortcutPath();
+  if (!FileExists(target) || path.empty()) {
+    return false;
+  }
+  ComPtr<IShellLinkW> link;
+  if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) ||
+      !link) {
+    return false;
+  }
+  link->SetPath(target.c_str());
+  link->SetWorkingDirectory(InstallFolder().c_str());
+  link->SetDescription(L"tinybrowser");
+  link->SetIconLocation(target.c_str(), 0);
+  ComPtr<IPersistFile> file;
+  if (FAILED(link.As(&file)) || !file) {
+    return false;
+  }
+  return SUCCEEDED(file->Save(path.c_str(), TRUE));
+}
+
+void RemoveDesktopShortcut() {
+  const std::wstring path = DesktopShortcutPath();
+  if (!path.empty()) {
+    DeleteFileW(path.c_str());
+  }
+}
+
+// The copy itself; running from the installed exe means there is nothing to copy.
+bool CopyIntoInstallFolder() {
+  const std::wstring folder = InstallFolder();
+  const std::wstring target = InstalledExe();
+  const std::wstring source = CurrentExe();
+  if (folder.empty() || target.empty() || source.empty()) {
+    return false;
+  }
+  if (SamePath(source, target)) {
+    return true;
+  }
+  const int created = SHCreateDirectoryExW(nullptr, folder.c_str(), nullptr);
+  if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && !FileExists(folder)) {
+    return false;
+  }
+  return CopyFileW(source.c_str(), target.c_str(), FALSE) != 0;
+}
+
+void DoInstall() {
+  if (!CopyIntoInstallFolder()) {
+    MessageBoxW(nullptr, L"No pude copiar el tiny.exe a tu carpeta de usuario.", kTitle,
+                MB_OK | MB_ICONERROR);
+    return;
+  }
+  SetPathEntry(InstallFolder(), true);
+  EnsureAssociation();  // now it points at the copy, which is what a double click should open
+  if (FileExists(DesktopShortcutPath())) {
+    CreateDesktopShortcut();  // a shortcut already on the desktop follows the copy, not the old path
+  }
+}
+
+// Uninstalling takes away everything installing put there. The WebView2 profile stays: it is the
+// logins and cookies of every page you opened, not part of the program.
+void DoUninstall() {
+  SetPathEntry(InstallFolder(), false);
+  RemoveDesktopShortcut();
+  RemoveAssociation();
+  const std::wstring target = InstalledExe();
+  if (SamePath(CurrentExe(), target)) {
+    // Windows keeps the image of a running program open, but it does let the file be moved: parking it
+    // in the temp folder is what lets the install folder go away while this window is still up.
+    wchar_t temp[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, temp)) {
+      wchar_t name[64] = {};
+      wsprintfW(name, L"tiny-uninstalled-%u.exe", (unsigned)GetCurrentProcessId());
+      MoveFileW(target.c_str(), (std::wstring(temp) + name).c_str());
+    }
+  } else {
+    DeleteFileW(target.c_str());  // the copy is not the program that is running
+  }
+  // The folder only goes away when it is empty, which is the check that catches a copy still in use.
+  const std::wstring folder = InstallFolder();
+  if (FileExists(folder) && !RemoveDirectoryW(folder.c_str())) {
+    wchar_t text[MAX_PATH + 128] = {};
+    wsprintfW(text, L"No pude borrar la carpeta instalada.\n\nQuedo en:\n%s", folder.c_str());
+    MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONWARNING);
+    return;
+  }
+  // And the vendor folder goes too once nothing else lives in it: an uninstall leaves no trail.
+  const size_t slash = folder.find_last_of(L'\\');
+  if (slash != std::wstring::npos) {
+    RemoveDirectoryW(folder.substr(0, slash).c_str());
+  }
+}
+
+// Only what is ours: a .to that belongs to another program is left alone, exactly as when taking it.
+void RemoveAssociation() {
+  const std::wstring classes = L"Software\\Classes\\";
+  HKEY key = nullptr;
+  wchar_t owner[128] = {};
+  DWORD bytes = sizeof(owner);
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, (classes + L".to").c_str(), 0, KEY_READ, &key) ==
+      ERROR_SUCCESS) {
+    if (RegQueryValueExW(key, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(owner), &bytes) ==
+            ERROR_SUCCESS &&
+        std::wcscmp(owner, kStateProgId) == 0) {
+      RegDeleteKeyW(HKEY_CURRENT_USER, (classes + L".to").c_str());
+    }
+    RegCloseKey(key);
+  }
+  RegDeleteTreeW(HKEY_CURRENT_USER, (classes + kStateProgId).c_str());
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
+
 // Whether the extension is still free. Nothing there means it is; another program's progid means it
 // is not ours to take.
 bool ExtensionIsFree(HKEY root, const wchar_t* subkey) {
@@ -2343,11 +2670,12 @@ bool EnsureAssociation() {
       !ExtensionIsFree(HKEY_CLASSES_ROOT, L".to")) {
     return false;
   }
-  wchar_t exe[MAX_PATH] = {};
-  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+  // The installed copy when there is one: a double click has to open that, not whichever copy of the
+  // program happens to be running.
+  const std::wstring executable = AssociationExe();
+  if (executable.empty()) {
     return false;
   }
-  const std::wstring executable(exe);
   const std::wstring classes = L"Software\\Classes\\";
   SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, L"tiny object");

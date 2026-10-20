@@ -47,9 +47,10 @@ se copia a cualquier PC con Windows y anda.
 - Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
   (incluso encima de una página cargada). Va a cualquier lado del escritorio, incluso encima de la
   barra de tareas; el único tope es que no se pierda fuera de la pantalla.
-- Atrás / adelante / recargar están en la barra; el `x` de la derecha cierra. Recargar y atrás
-  actúan sobre la página que tenías cargada, no sobre la barra. Hasta que no hayas cargado una
-  página, esos botones aparecen apagados: no hay nada sobre qué actuar.
+- Atrás / adelante están en la barra; el `x` de la derecha cierra. Atrás actúa sobre la página que
+  tenías cargada, no sobre la barra. Hasta que no hayas cargado una página, esos botones aparecen
+  apagados: no hay nada sobre qué actuar. El botón de recargar pasó a ser el de **instalación** (ver
+  más abajo); para volver a cargar la página, escribí la dirección otra vez y Enter.
 - Los enlaces que abren pestaña nueva se cargan en la misma ventana.
 - **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
   pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
@@ -65,6 +66,26 @@ se copia a cualquier PC con Windows y anda.
   transparentados y, si el rango venía de un `.to`, ese rango también.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
+
+### Instalarlo en el sistema
+
+El botón de la flecha hacia la bandeja (donde estaba recargar) abre el panel de **instalación**. Todo
+se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrador.
+
+- **Instalar** copia el exe a `%LOCALAPPDATA%\Unresolute\tinybrowser\tiny.exe`, agrega esa carpeta al
+  PATH del usuario y reasocia los `.to` a esa copia, así el doble clic abre la instalada y no la que
+  estés ejecutando en ese momento. Si ya tenías el icono en el escritorio, lo actualiza.
+- **Icono en el escritorio** crea `tiny` en el escritorio. Aparece deshabilitado hasta que instales:
+  no hay copia a la que apuntar.
+- **El comando `tiny`**: con la carpeta en el PATH alcanza para que `Win+R` → `tiny` abra una ventana
+  (y lo mismo desde una consola). El Windows que ya estaba abierto tarda en enterarse; un `Win+R`
+  nuevo lo toma al instante.
+- **Desinstalar** quita el PATH, la asociación, el icono y la carpeta instalada. El perfil de WebView2
+  (`%LOCALAPPDATA%\tinybrowser`) se queda: ahí están los logins y las cookies de tus páginas. Si estás
+  corriendo justo desde la copia instalada, el `tiny.exe` se mueve a la carpeta temporal (Windows no
+  deja borrar un exe en uso) y podés borrarlo cuando cierres la ventana.
+- El panel muestra si está instalado o no, y el botón dice **Instalar** o **Desinstalar** según el
+  caso. Es el estado de la máquina, así que todas las ventanas ven lo mismo.
 
 ### Guardar un estado: los archivos `.to`
 
