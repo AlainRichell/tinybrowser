@@ -28,6 +28,7 @@
 #include <wrl.h>
 
 #include "WebView2.h"
+#include "tinyversion.h"
 
 
 using Microsoft::WRL::Callback;
@@ -198,12 +199,16 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     color:#9db2c6;overflow:hidden}
   #setup[hidden]{display:none}
   #setup .title{color:#7fb3d5;margin-bottom:3px}
+  #setup .actions{display:flex;gap:3px;margin-bottom:3px}
   #setup button{flex:none;width:100%;height:18px;margin-bottom:3px;font-size:10px}
+  #setup .actions button{flex:1 1 0;width:auto;min-width:0;margin:0;padding:0 2px;overflow:hidden;
+    white-space:nowrap;text-overflow:ellipsis}
   #setup label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
   #setup input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;
     accent-color:#4a90c2;cursor:pointer}
   #setup input[type=checkbox]:disabled{cursor:default}
-  #setup .note{color:#5b6b7d;margin-top:3px}
+  #setup .note{color:#5b6b7d;margin-top:3px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
 </style></head><body>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
@@ -230,7 +235,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 </div>
 <div id="setup"%SETUP_HIDDEN%>
 <div class="title">Instalaci&oacute;n</div>
-<button id="setupaction" data-cmd="%SETUP_COMMAND%">%SETUP_ACTION%</button>
+<div class="actions"><button id="setupaction" data-cmd="I">%SETUP_ACTION%</button><button id="setupremove" data-cmd="U"%SETUP_REMOVE_DISABLED% title="Desinstalar del equipo">Quitar</button></div>
 <label><input type="checkbox" id="desktopicon"%DESKTOP_CHECKED%%DESKTOP_DISABLED%><span>Icono en el escritorio</span></label>
 <div class="note">%SETUP_STATUS%</div>
 </div>
@@ -304,6 +309,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   };
   var setupAction = document.getElementById("setupaction");
   setupAction.onclick = function () { send(setupAction.getAttribute("data-cmd")); };
+  document.getElementById("setupremove").onclick = function () { send("U"); };
   document.getElementById("desktopicon").onchange = function () {
     send("K" + (this.checked ? "1" : "0"));
   };
@@ -498,9 +504,21 @@ void ReplaceToken(std::wstring* html, const wchar_t* token, const wchar_t* value
   }
 }
 
+// The same, for a value built at run time (a version, a path) instead of a literal.
+void ReplaceToken(std::wstring* html, const wchar_t* token, const std::wstring& value) {
+  ReplaceToken(html, token, value.c_str());
+}
+
 // The setup panel: copy this exe into the user's folder, put that folder on the PATH and point the
 // .to association at the copy. The bar asks about the installed copy on every redraw, so the readers
 // are here next to it.
+// What the setup panel offers and what it can say about the copy this machine holds.
+struct SetupInfo {
+  bool installed = false;
+  std::wstring action;  // the word on the button: install, update, reinstall or replace
+  std::wstring note;    // the versions behind that word
+};
+SetupInfo DescribeSetup();
 bool IsInstalled();
 bool FileExists(const std::wstring& path);
 std::wstring DesktopShortcutPath();
@@ -537,14 +555,14 @@ void ShowBar() {
   ReplaceToken(&html, L"%PUSH_DISABLED%", g_blockOverlap ? L"" : L" disabled");
   // The setup panel speaks about the machine, not about this window, so every bar reads the same
   // answer: which button it offers, whether the copy is there and whether the icon exists.
-  const bool installed = IsInstalled();
+  const SetupInfo setup = DescribeSetup();
   ReplaceToken(&html, L"%SETUP_HIDDEN%", g_setupPanel ? L"" : L" hidden");
   g_setupPanel = false;
-  ReplaceToken(&html, L"%SETUP_ACTION%", installed ? L"Desinstalar" : L"Instalar");
-  ReplaceToken(&html, L"%SETUP_COMMAND%", installed ? L"U" : L"I");
-  ReplaceToken(&html, L"%SETUP_STATUS%", installed ? L"instalado" : L"sin instalar");
+  ReplaceToken(&html, L"%SETUP_ACTION%", setup.action);
+  ReplaceToken(&html, L"%SETUP_STATUS%", setup.note);
+  ReplaceToken(&html, L"%SETUP_REMOVE_DISABLED%", setup.installed ? L"" : L" disabled");
   ReplaceToken(&html, L"%DESKTOP_CHECKED%", FileExists(DesktopShortcutPath()) ? L" checked" : L"");
-  ReplaceToken(&html, L"%DESKTOP_DISABLED%", installed ? L"" : L" disabled");
+  ReplaceToken(&html, L"%DESKTOP_DISABLED%", setup.installed ? L"" : L" disabled");
   g_showingBar = true;
   ResetFit();
   ResizeIfCanonical(kBarWidth, kBarHeight);
@@ -2153,13 +2171,17 @@ void FitAndPlace() {
   SetWindowPos(g_window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-// A .to file ("tiny object") is one window frozen in a file: the page it shows, the rectangle it
+// A .to file ("Tiny Browser snapshot") is one window frozen in a file: the page it shows, the rectangle it
 // occupies, the zoom it is drawn at and the colours it made transparent. Plain key=value text,
 // written with the same profile calls as the options file, so there is no parser here and it can be
 // read in Notepad.
 constexpr wchar_t kStateSection[] = L"tiny";
 constexpr wchar_t kStateFileExtension[] = L".to";
-constexpr wchar_t kStateProgId[] = L"tinybrowser.to";
+constexpr wchar_t kStateProgId[] = L"TinyBrowser.to";
+// The id this app wrote before the product had a name. Registry key names are case-insensitive, so
+// this is the same key as the one above and only the text of these two strings differs: an older
+// install's `.to` value still says this one, so it has to count as ours when re-taking the extension.
+constexpr wchar_t kLegacyStateProgId[] = L"tinybrowser.to";
 
 struct TinyState {
   std::wstring url;
@@ -2417,6 +2439,72 @@ bool IsInstalled() { return FileExists(InstalledExe()); }
 
 std::wstring AssociationExe() { return IsInstalled() ? InstalledExe() : CurrentExe(); }
 
+// The version a file reports out of its own resource. The installed copy is a different build, so
+// nothing in this process knows its number: it has to be read from where Explorer reads it too.
+bool FileVersionOf(const std::wstring& path, DWORDLONG* packed, std::wstring* text) {
+  *packed = 0;
+  text->clear();
+  if (path.empty()) {
+    return false;
+  }
+  DWORD ignored = 0;
+  const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+  if (size == 0) {
+    return false;
+  }
+  std::vector<BYTE> data(size, 0);
+  if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data())) {
+    return false;
+  }
+  VS_FIXEDFILEINFO* info = nullptr;
+  UINT bytes = 0;
+  if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &bytes) || !info ||
+      bytes < sizeof(VS_FIXEDFILEINFO)) {
+    return false;
+  }
+  *packed = ((DWORDLONG)info->dwFileVersionMS << 32) | info->dwFileVersionLS;
+  wchar_t buffer[64] = {};
+  wsprintfW(buffer, L"%u.%u.%u", (unsigned)HIWORD(info->dwFileVersionMS),
+            (unsigned)LOWORD(info->dwFileVersionMS), (unsigned)HIWORD(info->dwFileVersionLS));
+  *text = buffer;
+  return true;
+}
+
+// The numbers this build carries, in the same shape the resource reports them.
+DWORDLONG CurrentVersionPacked() {
+  return ((DWORDLONG)TINY_VERSION_MAJOR << 48) | ((DWORDLONG)TINY_VERSION_MINOR << 32) |
+         ((DWORDLONG)TINY_VERSION_PATCH << 16) | (DWORDLONG)TINY_VERSION_BUILD;
+}
+
+// The update story in one place: the panel gets a word for its button and a line for the versions,
+// chosen by comparing the installed copy's number with this build's. Equal numbers offer a reinstall,
+// an older copy an update, and a newer one is named instead of being written over without saying so.
+SetupInfo DescribeSetup() {
+  SetupInfo info;
+  info.installed = IsInstalled();
+  const std::wstring build = TINY_VERSION_WIDE;
+  if (!info.installed) {
+    info.action = L"Instalar";
+    info.note = L"esta build " + build;
+    return info;
+  }
+  DWORDLONG installed = 0;
+  std::wstring installedText;
+  if (!FileVersionOf(InstalledExe(), &installed, &installedText)) {
+    info.action = L"Instalar";
+    info.note = L"instalada sin version";
+    return info;
+  }
+  if (installed == CurrentVersionPacked()) {
+    info.action = L"Reinstalar";
+    info.note = L"instalada " + installedText;
+  } else {
+    info.action = installed < CurrentVersionPacked() ? L"Actualizar" : L"Reemplazar";
+    info.note = installedText + L" -> " + build;
+  }
+  return info;
+}
+
 std::wstring DesktopShortcutPath() {
   wchar_t folder[MAX_PATH] = {};
   if (FAILED(
@@ -2535,7 +2623,7 @@ bool CreateDesktopShortcut() {
   }
   link->SetPath(target.c_str());
   link->SetWorkingDirectory(InstallFolder().c_str());
-  link->SetDescription(L"tinybrowser");
+  link->SetDescription(TINY_PRODUCT_WIDE);
   link->SetIconLocation(target.c_str(), 0);
   ComPtr<IPersistFile> file;
   if (FAILED(link.As(&file)) || !file) {
@@ -2551,12 +2639,28 @@ void RemoveDesktopShortcut() {
   }
 }
 
-// The copy itself; running from the installed exe means there is nothing to copy.
-bool CopyIntoInstallFolder() {
+// Windows keeps the image of a running program open for reading, so the file cannot be written over
+// -- but it can be moved. Parking it in the temp folder is what lets an update land while the window
+// it belongs to is still open, and what lets the install folder go away on uninstall.
+bool ParkCopy(const std::wstring& path) {
+  wchar_t temp[MAX_PATH] = {};
+  if (path.empty() || !GetTempPathW(MAX_PATH, temp)) {
+    return false;
+  }
+  wchar_t name[64] = {};
+  wsprintfW(name, L"tiny-parked-%u.exe", (unsigned)GetCurrentProcessId());
+  return MoveFileW(path.c_str(), (std::wstring(temp) + name).c_str()) != 0;
+}
+
+// The copy itself; running from the installed exe means there is nothing to copy. The failure code
+// travels back so an install that did not land can say why instead of dropping the reason.
+bool CopyIntoInstallFolder(DWORD* error) {
+  *error = ERROR_SUCCESS;
   const std::wstring folder = InstallFolder();
   const std::wstring target = InstalledExe();
   const std::wstring source = CurrentExe();
   if (folder.empty() || target.empty() || source.empty()) {
+    *error = ERROR_PATH_NOT_FOUND;
     return false;
   }
   if (SamePath(source, target)) {
@@ -2564,15 +2668,47 @@ bool CopyIntoInstallFolder() {
   }
   const int created = SHCreateDirectoryExW(nullptr, folder.c_str(), nullptr);
   if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && !FileExists(folder)) {
+    *error = (DWORD)created;
     return false;
   }
-  return CopyFileW(source.c_str(), target.c_str(), FALSE) != 0;
+  if (CopyFileW(source.c_str(), target.c_str(), FALSE)) {
+    return true;
+  }
+  DWORD failure = GetLastError();
+  // A copy of this app is running from the target, which is the normal case while updating: move it
+  // out of the way and write again. The retry is bounded and spaced because the file can stay busy
+  // for a moment after the move (a scanner opening it is the usual reason), and giving up on the
+  // first refusal is what makes an update look like it silently did nothing.
+  if (failure == ERROR_SHARING_VIOLATION || failure == ERROR_ACCESS_DENIED) {
+    if (ParkCopy(target)) {
+      for (int attempt = 0; attempt < 4; ++attempt) {
+        if (CopyFileW(source.c_str(), target.c_str(), FALSE)) {
+          return true;
+        }
+        failure = GetLastError();
+        if (failure != ERROR_SHARING_VIOLATION && failure != ERROR_ACCESS_DENIED) {
+          break;  // a refusal that waiting cannot fix
+        }
+        Sleep(120);
+      }
+    } else {
+      failure = GetLastError();
+    }
+  }
+  *error = failure;
+  return false;
 }
 
+void WriteUninstallEntry();     // defined with the registry helpers below
+void RemoveUninstallEntry();    // ... and so is this one
+
 void DoInstall() {
-  if (!CopyIntoInstallFolder()) {
-    MessageBoxW(nullptr, L"No pude copiar el tiny.exe a tu carpeta de usuario.", kTitle,
-                MB_OK | MB_ICONERROR);
+  DWORD error = ERROR_SUCCESS;
+  if (!CopyIntoInstallFolder(&error)) {
+    wchar_t text[256] = {};
+    wsprintfW(text, L"No pude copiar tiny.exe a tu carpeta de usuario.\n\nError %u.",
+              (unsigned)error);
+    MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONERROR);
     return;
   }
   SetPathEntry(InstallFolder(), true);
@@ -2580,6 +2716,7 @@ void DoInstall() {
   if (FileExists(DesktopShortcutPath())) {
     CreateDesktopShortcut();  // a shortcut already on the desktop follows the copy, not the old path
   }
+  WriteUninstallEntry();  // Settings shows the version that was just written
 }
 
 // Uninstalling takes away everything installing put there. The WebView2 profile stays: it is the
@@ -2588,22 +2725,25 @@ void DoUninstall() {
   SetPathEntry(InstallFolder(), false);
   RemoveDesktopShortcut();
   RemoveAssociation();
+  RemoveUninstallEntry();
   const std::wstring target = InstalledExe();
   if (SamePath(CurrentExe(), target)) {
-    // Windows keeps the image of a running program open, but it does let the file be moved: parking it
-    // in the temp folder is what lets the install folder go away while this window is still up.
-    wchar_t temp[MAX_PATH] = {};
-    if (GetTempPathW(MAX_PATH, temp)) {
-      wchar_t name[64] = {};
-      wsprintfW(name, L"tiny-uninstalled-%u.exe", (unsigned)GetCurrentProcessId());
-      MoveFileW(target.c_str(), (std::wstring(temp) + name).c_str());
-    }
+    ParkCopy(target);  // the running image cannot be deleted, only moved out of the way
   } else {
     DeleteFileW(target.c_str());  // the copy is not the program that is running
   }
   // The folder only goes away when it is empty, which is the check that catches a copy still in use.
+  // A file that was just deleted can stay pending for a moment while its last handle closes, and to
+  // RemoveDirectoryW that is simply "not empty": give it a few tries before calling it stuck.
   const std::wstring folder = InstallFolder();
-  if (FileExists(folder) && !RemoveDirectoryW(folder.c_str())) {
+  bool removed = !FileExists(folder);
+  for (int attempt = 0; !removed && attempt < 6; ++attempt) {
+    removed = RemoveDirectoryW(folder.c_str()) != 0;
+    if (!removed) {
+      Sleep(120);
+    }
+  }
+  if (!removed) {
     wchar_t text[MAX_PATH + 128] = {};
     wsprintfW(text, L"No pude borrar la carpeta instalada.\n\nQuedo en:\n%s", folder.c_str());
     MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONWARNING);
@@ -2616,6 +2756,29 @@ void DoUninstall() {
   }
 }
 
+// Asked by Settings > Installed apps: the same work as the panel button, with no window around it.
+// It deletes a running program's folder, so it asks first.
+int UninstallFromCommandLine() {
+  if (!IsInstalled()) {
+    MessageBoxW(nullptr, L"Tiny Browser no esta instalado en este equipo.", kTitle,
+                MB_OK | MB_ICONINFORMATION);
+    return 0;
+  }
+  if (MessageBoxW(nullptr, L"Quitar Tiny Browser de este equipo?", kTitle,
+                  MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    return 0;
+  }
+  DoUninstall();
+  return 0;
+}
+
+// Both ids count as ours: the current one and the one this app wrote before the product had a name.
+// The `.to` value is text, so it is compared case-sensitively and both spellings matter; the keys the
+// ids name are case-insensitive, which is why there is nothing to migrate and nothing to delete.
+bool IsOurProgId(const wchar_t* owner) {
+  return std::wcscmp(owner, kStateProgId) == 0 || std::wcscmp(owner, kLegacyStateProgId) == 0;
+}
+
 // Only what is ours: a .to that belongs to another program is left alone, exactly as when taking it.
 void RemoveAssociation() {
   const std::wstring classes = L"Software\\Classes\\";
@@ -2626,7 +2789,7 @@ void RemoveAssociation() {
       ERROR_SUCCESS) {
     if (RegQueryValueExW(key, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(owner), &bytes) ==
             ERROR_SUCCESS &&
-        std::wcscmp(owner, kStateProgId) == 0) {
+        IsOurProgId(owner)) {
       RegDeleteKeyW(HKEY_CURRENT_USER, (classes + L".to").c_str());
     }
     RegCloseKey(key);
@@ -2647,7 +2810,7 @@ bool ExtensionIsFree(HKEY root, const wchar_t* subkey) {
   const LSTATUS status =
       RegQueryValueExW(key, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(owner), &bytes);
   RegCloseKey(key);
-  return status != ERROR_SUCCESS || std::wcscmp(owner, kStateProgId) == 0;
+  return status != ERROR_SUCCESS || IsOurProgId(owner);
 }
 
 void SetKeyDefault(HKEY root, const std::wstring& subkey, const std::wstring& value) {
@@ -2660,6 +2823,72 @@ void SetKeyDefault(HKEY root, const std::wstring& subkey, const std::wstring& va
                  (DWORD)((value.size() + 1) * sizeof(wchar_t)));
   RegCloseKey(key);
 }
+
+void SetKeyString(HKEY root, const std::wstring& subkey, const wchar_t* name,
+                  const std::wstring& value) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(root, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) !=
+      ERROR_SUCCESS) {
+    return;
+  }
+  RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                 (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+  RegCloseKey(key);
+}
+
+void SetKeyDword(HKEY root, const std::wstring& subkey, const wchar_t* name, DWORD value) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(root, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) !=
+      ERROR_SUCCESS) {
+    return;
+  }
+  RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
+  RegCloseKey(key);
+}
+
+// The line Settings > Installed apps shows: the name, the version of the copy that is there and the
+// way out. Rewritten on every install and at every start, because the version travels with the exe
+// and this is the only place Windows can read it from.
+constexpr wchar_t kUninstallKey[] =
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TinyBrowser";
+
+// Reading the version back is cheaper than rewriting eight values on every start, and a start is
+// the only moment this line could have gone stale (a new copy, a new version).
+bool UninstallEntryIsCurrent() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kUninstallKey, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  wchar_t value[64] = {};
+  DWORD bytes = sizeof(value);
+  const LSTATUS status = RegQueryValueExW(key, L"DisplayVersion", nullptr, nullptr,
+                                          reinterpret_cast<LPBYTE>(value), &bytes);
+  RegCloseKey(key);
+  return status == ERROR_SUCCESS && std::wcscmp(value, TINY_VERSION_WIDE) == 0;
+}
+
+void WriteUninstallEntry() {
+  if (!IsInstalled() || UninstallEntryIsCurrent()) {
+    return;
+  }
+  const std::wstring exe = InstalledExe();
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"DisplayName", TINY_PRODUCT_WIDE);
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"DisplayVersion", TINY_VERSION_WIDE);
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"Publisher", TINY_VENDOR_WIDE);
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"DisplayIcon", exe + L",0");
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"InstallLocation", InstallFolder());
+  SetKeyString(HKEY_CURRENT_USER, kUninstallKey, L"UninstallString",
+               L"\"" + exe + L"\" --uninstall");
+  SetKeyDword(HKEY_CURRENT_USER, kUninstallKey, L"NoModify", 1);
+  SetKeyDword(HKEY_CURRENT_USER, kUninstallKey, L"NoRepair", 1);
+  WIN32_FILE_ATTRIBUTE_DATA data = {};
+  if (GetFileAttributesExW(exe.c_str(), GetFileExInfoStandard, &data)) {
+    const DWORDLONG bytes = ((DWORDLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+    SetKeyDword(HKEY_CURRENT_USER, kUninstallKey, L"EstimatedSize", (DWORD)(bytes / 1024));
+  }
+}
+
+void RemoveUninstallEntry() { RegDeleteTreeW(HKEY_CURRENT_USER, kUninstallKey); }
 
 // Double-clicking a .to in Explorer has to open it with this app, which takes a per-user
 // association: no admin rights and nothing system-wide. An extension another program already owns
@@ -2678,13 +2907,15 @@ bool EnsureAssociation() {
   }
   const std::wstring classes = L"Software\\Classes\\";
   SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
-  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, L"tiny object");
+  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, TINY_TYPE_WIDE);
   // Resource id 2, the document icon: a .to has to look like a file, not like the browser that
   // opens it.
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon",
                 L"\"" + executable + L"\",-2");
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command",
                 L"\"" + executable + L"\" \"%1\"");
+  // Nothing is deleted here for the old id: "tinybrowser.to" and "TinyBrowser.to" are the same key,
+  // so a sweep would erase the ProgId (and its open command) that was just written.
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
   return true;
 }
@@ -2990,7 +3221,7 @@ void ReportMissingRuntime() {
   const int answer = MessageBoxW(
       nullptr,
       L"Falta el runtime de Microsoft Edge WebView2.\n\n"
-      L"¿Quieres instalarlo ahora?",
+      L"\u00BFQuieres instalarlo ahora?",
       kTitle, MB_ICONWARNING | MB_YESNO);
 
   if (answer != IDYES) {
@@ -3415,11 +3646,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  const std::wstring arguments = Trim(commandLine ? commandLine : L"");
+  // What Settings > Installed apps runs: no window, no engine, and nothing restated on the way out.
+  if (lstrcmpiW(arguments.c_str(), L"--uninstall") == 0) {
+    return UninstallFromCommandLine();
+  }
   LoadSettings();
   // The association records the path of the exe that wrote it, so it is restated on every start:
   // after moving the exe, double-clicking one of those files still opens this build.
   EnsureAssociation();
-  const std::wstring arguments = Trim(commandLine ? commandLine : L"");
+  WriteUninstallEntry();  // the version Settings shows follows the copy that is installed
   // Options in front of the address, all optional and only sent by a duplicate: --place x y width
   // height (the spot it was given), --key (the colours it had keyed, as the same decimal list the .to
   // files use) and --range (its margin, only when that one was not the app-wide value).

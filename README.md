@@ -74,23 +74,38 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
 
 - **Instalar** copia el exe a `%LOCALAPPDATA%\Unresolute\tinybrowser\tiny.exe`, agrega esa carpeta al
   PATH del usuario y reasocia los `.to` a esa copia, así el doble clic abre la instalada y no la que
-  estés ejecutando en ese momento. Si ya tenías el icono en el escritorio, lo actualiza.
+  estés ejecutando en ese momento. Si ya tenías el icono en el escritorio, lo actualiza. También deja la
+  línea de **Tiny Browser** en Configuración → Aplicaciones instaladas, con su versión y su
+  desinstalador.
+- **Actualizar** es ese mismo botón cuando la copia instalada declara una versión anterior a la del exe
+  que estás corriendo: dice **Actualizar** (o **Reinstalar** si son la misma, **Reemplazar** si la
+  instalada es más nueva) y abajo la línea de versiones, `1.0.0 -> 1.1.0`. La comparación se hace
+  leyendo el recurso de versión de cada exe, no la fecha de los archivos, así que no depende de cómo se
+  copiaron. Se puede actualizar con la ventana vieja abierta: si el `tiny.exe` está en uso se mueve a la
+  carpeta temporal y la copia nueva ocupa su lugar; la ventana que estaba abierta sigue con la versión
+  anterior hasta que la cierres.
 - **Icono en el escritorio** crea `tiny` en el escritorio. Aparece deshabilitado hasta que instales:
   no hay copia a la que apuntar.
 - **El comando `tiny`**: con la carpeta en el PATH alcanza para que `Win+R` → `tiny` abra una ventana
   (y lo mismo desde una consola). El Windows que ya estaba abierto tarda en enterarse; un `Win+R`
   nuevo lo toma al instante.
-- **Desinstalar** quita el PATH, la asociación, el icono y la carpeta instalada. El perfil de WebView2
-  (`%LOCALAPPDATA%\tinybrowser`) se queda: ahí están los logins y las cookies de tus páginas. Si estás
-  corriendo justo desde la copia instalada, el `tiny.exe` se mueve a la carpeta temporal (Windows no
-  deja borrar un exe en uso) y podés borrarlo cuando cierres la ventana.
-- El panel muestra si está instalado o no, y el botón dice **Instalar** o **Desinstalar** según el
-  caso. Es el estado de la máquina, así que todas las ventanas ven lo mismo.
+- **Quitar** desinstala: saca el PATH, la asociación, el icono, la línea de Aplicaciones instaladas y
+  la carpeta instalada. El perfil de WebView2 (`%LOCALAPPDATA%\tinybrowser`) se queda: ahí están los
+  logins y las cookies de tus páginas. Si estás corriendo justo desde la copia instalada, el `tiny.exe`
+  se mueve a la carpeta temporal (Windows no deja borrar un exe en uso) y podés borrarlo cuando cierres
+  la ventana.
+- Lo mismo hace `tiny.exe --uninstall`, que es lo que corre el desinstalador de Configuración: pregunta
+  antes, no abre ventana y no necesita nada del motor.
+- El panel muestra la versión instalada y la de esta build, y es el estado de la máquina, así que todas
+  las ventanas ven lo mismo.
+- La versión y los nombres viajan en el exe (recurso `VERSIONINFO`): Explorer y la barra de tareas
+  dicen **Tiny Browser** 1.0.0, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
+  `tinyversion.h`, un solo lugar para el recurso y para el panel.
 
 ### Guardar un estado: los archivos `.to`
 
 - `Ctrl+Alt+G` con una página abierta abre el diálogo de guardar y escribe un archivo **`.to`**
-  (*tiny object*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
+  (*Tiny Browser snapshot*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
   el tamaño, el zoom, y los colores que hayas transparentado con su rango.
 - Los `.to` tienen su propio icono en el Explorador: una hoja de papel con el donut de tiny grande en
   la esquina, distinta del icono del navegador. Lo pone el exe como segundo icono (`id 2`) y la
