@@ -94,6 +94,11 @@ COLORREF g_pickPreview = CLR_INVALID;  // colour shown in the pipette's bulb
 POINT g_pickAt = {};          // where the eyedropper was clicked
 bool g_blockOverlap = true;   // option: a window never ends up on top of another one
 bool g_pushOthers = false;    // option: the window being dragged moves its neighbours aside
+// How far around the picked colour the key still reaches, in 8-bit levels per channel. 0 keys only
+// the exact value; the eyedropper reads a screen pixel that may differ by a level or two from what
+// the page painted, so some margin is what makes it usable at all.
+int g_keyRange = 5;
+constexpr int kKeyRangeMax = 40;
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 // Composition hosting: the engine draws into this DirectComposition tree instead of a child HWND.
@@ -154,14 +159,23 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #commands .k{display:inline-block;min-width:58px;color:#7fb3d5}
   #closepanel{font-size:9px;color:#5b6b7d;margin-top:1px}
   #options{display:inline-flex;align-items:center;justify-content:center}
-  #settings{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:6;padding:4px 6px;
-    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.3;
-    color:#9db2c6;overflow:auto}
+  #settings{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:6;padding:3px 5px;
+    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.1;
+    color:#9db2c6;overflow:hidden}
   #settings[hidden]{display:none}
   #settings .title{color:#7fb3d5;margin-bottom:2px}
-  #settings label{display:flex;align-items:center;gap:4px;cursor:pointer}
-  #settings input{flex:0 0 auto;width:11px;height:11px;margin:0;accent-color:#4a90c2;cursor:pointer}
-  #settings input:disabled{cursor:default}
+  #settings label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
+  #settings input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;
+    accent-color:#4a90c2;cursor:pointer}
+  #settings input[type=checkbox]:disabled{cursor:default}
+  #settings .range{display:flex;align-items:center;justify-content:space-between;cursor:default}
+  #settings input[type=range]{display:block;width:100%;height:10px;margin:0;padding:0;
+    -webkit-appearance:none;appearance:none;background:transparent;cursor:pointer}
+  #settings input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;
+    background:#2b3644}
+  #settings input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+    width:9px;height:9px;margin-top:-2.5px;border-radius:50%;background:#4a90c2}
+  #settings .value{flex:0 0 12px;text-align:right;color:#7fb3d5}
   #closepanel2{font-size:9px;color:#5b6b7d;margin-top:1px}
 </style></head><body>
 <div id="grip" title="drag"></div>
@@ -178,11 +192,13 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div><span class="k">Alt+arrastrar</span> mover</div>
 <div id="closepanel">clic para cerrar</div>
 </div>
+)HTML" LR"HTML(
 <div id="settings" hidden>
 <div class="title">Opciones</div>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
-<div id="closepanel2">clic para cerrar</div>
+<label class="range"><span>Rango del color</span><span class="value" id="keyrangevalue">%KEY_RANGE%</span></label>
+<input type="range" id="keyrange" min="0" max="40" step="1" value="%KEY_RANGE%">
 </div>
 <script>
 (function () {
@@ -229,6 +245,12 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     pushOthers.disabled = !noOverlap.checked;
   };
   pushOthers.onchange = function () { send("P" + (pushOthers.checked ? "1" : "0")); };
+  // The range only travels on release: dragging would otherwise rewrite the settings file and
+  // re-filter every window on each pixel of the slider.
+  var keyRange = document.getElementById("keyrange");
+  var keyRangeValue = document.getElementById("keyrangevalue");
+  keyRange.oninput = function () { keyRangeValue.textContent = keyRange.value; };
+  keyRange.onchange = function () { send("T" + keyRange.value); };
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
   // start inside the page: the grip reports pixel deltas and the host moves itself.
@@ -410,12 +432,14 @@ void SetPageZoomControl(bool enabled) {
 }
 
 // Single-use placeholders in the bar page: the value goes in once and the token disappears.
+// Every occurrence: one token can be needed in more than one place (the range shows its value twice).
 void ReplaceToken(std::wstring* html, const wchar_t* token, const wchar_t* value) {
-  const size_t at = html->find(token);
-  if (at == std::wstring::npos) {
-    return;
+  const size_t length = std::wcslen(token);
+  const size_t grown = std::wcslen(value);
+  for (size_t at = html->find(token); at != std::wstring::npos;
+       at = html->find(token, at + grown)) {
+    html->replace(at, length, value);
   }
-  html->replace(at, std::wcslen(token), value);
 }
 
 void ShowBar() {
@@ -437,6 +461,9 @@ void ShowBar() {
   }
   ReplaceToken(&html, L"%CHECKED_OVERLAP%", g_blockOverlap ? L" checked" : L"");
   ReplaceToken(&html, L"%CHECKED_PUSH%", g_pushOthers ? L" checked" : L"");
+  wchar_t rangeValue[8] = {};
+  wsprintfW(rangeValue, L"%d", g_keyRange);
+  ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
   // Pushing without the rule above it makes no sense, so it is disabled in place, not hidden.
   ReplaceToken(&html, L"%PUSH_DISABLED%", g_blockOverlap ? L"" : L" disabled");
   g_showingBar = true;
@@ -614,7 +641,13 @@ void SetEngineBackground(bool transparent) {
 const wchar_t kColourKeyScript[] =
     L"(function(){"
     L"if(window.__tinyKeyRestore){window.__tinyKeyRestore();}"
-    L"var cr=%d, cg=%d, cb=%d;"
+    L"var cr=%d, cg=%d, cb=%d, rr=%d;"
+    // The margin, in levels per channel, becomes the threshold of the mask: a pixel whose distance
+    // to the picked colour adds up to less than this disappears along with it.
+    L"var thr=rr*3/255;"
+    // feFuncA is alpha = slope*alpha + intercept, so the threshold has to come back multiplied by
+    // the slope: alpha reaches 0 exactly at the picked margin and is 1 a few levels past it.
+    L"var cutoff=-25*thr;"
     // The key is an SVG filter that turns the picked colour into alpha: absolute difference per
     // channel (each transfer keeps the positive side of one subtraction), summed, thresholded and
     // then used as the mask of the original colours. It reads no pixels, so it reaches animated GIFs,
@@ -633,7 +666,7 @@ const wchar_t kColourKeyScript[] =
     L"+\"<feColorMatrix in='diff' type='matrix' "
     L"values='1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  1 1 1 0 0' result='sum'/>\""
     L"+\"<feComponentTransfer in='sum' result='mask'>"
-    L"<feFuncA type='linear' slope='25' intercept='-0.06'/></feComponentTransfer>\""
+    L"<feFuncA type='linear' slope='25' intercept='\"+cutoff+\"'/></feComponentTransfer>\""
     L"+\"<feComposite in='SourceGraphic' in2='mask' operator='in'/></filter></svg>\";"
     // As a data URL: a filter living in a page element is not resolved when this script is injected
     // from the host, and the page then renders as if it had no filter at all.
@@ -663,7 +696,7 @@ void RunColourKey() {
   // Not wsprintfW: it stops at 1024 characters and this script is longer than that.
   wchar_t script[8192] = {};
   StringCchPrintfW(script, ARRAYSIZE(script), kColourKeyScript, GetRValue(g_keyColour),
-                   GetGValue(g_keyColour), GetBValue(g_keyColour));
+                   GetGValue(g_keyColour), GetBValue(g_keyColour), g_keyRange);
   g_webview->ExecuteScript(script, nullptr);
 }
 
@@ -793,6 +826,9 @@ void HandleHotkey(UINT id, LPARAM data) {
     ShowInstance(data != 0);
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
+    if (g_keyed) {
+      RunColourKey();
+    }
   } else if (id == kHotkeyPick) {
     TogglePicking();
   } else if (id == kCommandPick) {
@@ -929,6 +965,8 @@ void LoadSettings() {
   }
   g_blockOverlap = GetPrivateProfileIntW(kSettingsSection, L"NoOverlap", 1, path) != 0;
   g_pushOthers = GetPrivateProfileIntW(kSettingsSection, L"PushOthers", 0, path) != 0;
+  const int range = GetPrivateProfileIntW(kSettingsSection, L"KeyRange", 5, path);
+  g_keyRange = range < 0 ? 0 : (range > kKeyRangeMax ? kKeyRangeMax : range);
 }
 
 void SaveSettings() {
@@ -942,6 +980,8 @@ void SaveSettings() {
   WritePrivateProfileStringW(kSettingsSection, L"NoOverlap", value, path);
   wsprintfW(value, L"%d", g_pushOthers ? 1 : 0);
   WritePrivateProfileStringW(kSettingsSection, L"PushOthers", value, path);
+  wsprintfW(value, L"%d", g_keyRange);
+  WritePrivateProfileStringW(kSettingsSection, L"KeyRange", value, path);
 }
 
 // A switch is app-wide: the other copies pick it up from the file instead of keeping their own.
@@ -970,6 +1010,19 @@ void SetPushOthers(bool on) {
   g_pushOthers = on;
   SaveSettings();
   ShareSettings();
+}
+
+void SetKeyRange(int value) {
+  const int clamped = value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value);
+  if (g_keyRange == clamped) {
+    return;
+  }
+  g_keyRange = clamped;
+  SaveSettings();
+  ShareSettings();
+  if (g_keyed) {
+    RunColourKey();  // this window re-filters with the new margin straight away
+  }
 }
 
 bool g_ctrlDown = false;
@@ -1697,6 +1750,7 @@ void OnBarCommand(const std::wstring& message) {
     // From the options panel: the switches themselves, and the note that they changed.
     case L'N': SetBlockOverlap(message.size() > 1 && message[1] == L'1'); break;
     case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
+    case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
     case L'S': ShowBar(); break;
     case L'M': {

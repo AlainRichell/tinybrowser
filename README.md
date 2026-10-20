@@ -76,8 +76,10 @@ Y como la base de la página también deja de pintar, el agujero no se queda en 
 lo que se ve a través es el escritorio. Dicho al revés: si había algo debajo de ese color, también
 desaparece.
 
-La comparación tiene una tolerancia de unos 5 niveles por canal, porque la pantalla puede devolver un
-color que difiere en una o dos unidades del valor que tenía en la página.
+La comparación tiene una tolerancia, porque la pantalla puede devolver un color que difiere en una o
+dos unidades del valor que tenía en la página. Ese margen es el control **Rango del color** de las
+opciones: 0 quita sólo el color exacto y cada punto agrega un nivel por canal, hasta 40. Se guarda en
+`tinybrowser.ini` como `KeyRange` y vale para todas las instancias (por defecto 5).
 
 ## Opciones
 
