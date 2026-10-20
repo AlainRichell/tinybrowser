@@ -10,8 +10,12 @@
 #define _UNICODE
 
 #include <windows.h>
+#include <d3d11.h>
+#include <dcomp.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <windowsx.h>
+#include <strsafe.h>
 #include <cctype>
 #include <cstdlib>
 #include <cwchar>
@@ -59,11 +63,16 @@ constexpr UINT kHotkeyQuit = 2;       // Ctrl+Alt+X
 constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
 constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
 constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
+constexpr UINT kHotkeyPick = 6;       // Ctrl+Alt+A
 // CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
 constexpr UINT kCommandShowAll = 11;
 constexpr UINT kCommandSettings = 12;  // a switch changed in another copy
+constexpr UINT kPickTimer = 8;         // keeps the pipette's bulb on the colour under the tip
+constexpr UINT kCommandPick = 13;      // the eyedropper was clicked
+constexpr UINT kCommandPickCancel = 14;  // ... or given up
+
 
 // The two switches are kept in a file next to the exe so every copy starts with the same answers.
 constexpr wchar_t kSettingsFile[] = L"tinybrowser.ini";
@@ -77,10 +86,24 @@ constexpr wchar_t kRuntimeUrl[] = L"https://go.microsoft.com/fwlink/p/?LinkId=21
 constexpr wchar_t kBootstrapperName[] = L"MicrosoftEdgeWebview2Setup.exe";
 
 HWND g_window = nullptr;
+bool g_picking = false;       // eyedropper armed, waiting for the click
+bool g_keyed = false;         // a colour of this page is being made transparent
+COLORREF g_keyColour = 0;     // ... the one that was picked
+HCURSOR g_pickCursor = nullptr;
+COLORREF g_pickPreview = CLR_INVALID;  // colour shown in the pipette's bulb
+POINT g_pickAt = {};          // where the eyedropper was clicked
 bool g_blockOverlap = true;   // option: a window never ends up on top of another one
 bool g_pushOthers = false;    // option: the window being dragged moves its neighbours aside
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
+// Composition hosting: the engine draws into this DirectComposition tree instead of a child HWND.
+// It is the only mode where a page can have per-pixel alpha, which is what lets a colour be made
+// transparent to the desktop. The price is that pointer input has to be forwarded by hand.
+ComPtr<ICoreWebView2CompositionController> g_composition;
+ComPtr<IDCompositionDevice> g_dcompDevice;
+ComPtr<IDCompositionTarget> g_dcompTarget;
+ComPtr<IDCompositionVisual> g_dcompRoot;
+HCURSOR g_pageCursor = nullptr;  // what the page wants under the pointer (links, text fields)
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
 // Resizing and moving the window are driven from HERE, never from the page. Over a scrollbar the
@@ -150,6 +173,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div><span class="k">Ctrl+Alt+D</span> duplicar</div>
 <div><span class="k">Ctrl+Alt+Z</span> atr&aacute;s</div>
 <div><span class="k">Ctrl+Alt+C</span> ocultar</div>
+<div><span class="k">Ctrl+Alt+A</span> gotero</div>
 <div><span class="k">Ctrl+Alt+X</span> cerrar</div>
 <div><span class="k">Alt+arrastrar</span> mover</div>
 <div id="closepanel">clic para cerrar</div>
@@ -448,6 +472,257 @@ void RunInPage(const wchar_t* script) {
 }
 
 void DuplicateInNewInstance();  // defined with the placement helpers below
+
+// Windows ships no eyedropper cursor, and a crosshair does not say "pick a colour". The pipette is
+// drawn here: a shaft with a round bulb at the end, black over a white halo so it reads on any
+// background, and nothing anywhere else (fully transparent pixels). The tip has to sit on (0,0):
+// a cursor built with CreateIconIndirect always has that hotspot, so a tip drawn anywhere else makes
+// the pixel that gets picked land far from the pixel the user is aiming at.
+HCURSOR CreatePickCursor(COLORREF preview, bool hasPreview) {
+  const int size = 32;
+  BITMAPV5HEADER header = {};
+  header.bV5Size = sizeof(header);
+  header.bV5Width = size;
+  header.bV5Height = -size;
+  header.bV5Planes = 1;
+  header.bV5BitCount = 32;
+  header.bV5Compression = BI_BITFIELDS;
+  header.bV5RedMask = 0x00FF0000;
+  header.bV5GreenMask = 0x0000FF00;
+  header.bV5BlueMask = 0x000000FF;
+  header.bV5AlphaMask = 0xFF000000;
+  void* pixels = nullptr;
+  HDC screen = GetDC(nullptr);
+  HBITMAP colour = CreateDIBSection(screen, (BITMAPINFO*)&header, DIB_RGB_COLORS, &pixels,
+                                    nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!colour || !pixels) {
+    return nullptr;
+  }
+  HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);  // all zero: use the colour bitmap
+
+  // The pipette: tip at (0,0), shaft to (12,12), bulb at (17,17).
+  const int shaftX0 = 0, shaftY0 = 0, shaftX1 = 12, shaftY1 = 12;
+  const int bulbX = 17, bulbY = 17;
+  const double shaftDx = (double)(shaftX1 - shaftX0);
+  const double shaftDy = (double)(shaftY1 - shaftY0);
+  const double shaftLen = shaftDx * shaftDx + shaftDy * shaftDy;
+  auto distanceToShaft = [&](int x, int y) {
+    const double t = ((x - shaftX0) * shaftDx + (y - shaftY0) * shaftDy) / shaftLen;
+    const double clamped = t < 0 ? 0 : (t > 1 ? 1 : t);
+    const double px = shaftX0 + clamped * shaftDx;
+    const double py = shaftY0 + clamped * shaftDy;
+    const double dx = x - px;
+    const double dy = y - py;
+    return dx * dx + dy * dy;
+  };
+  auto distanceToBulb = [&](int x, int y) {
+    const double dx = x - bulbX;
+    const double dy = y - bulbY;
+    return dx * dx + dy * dy;
+  };
+
+  DWORD* buffer = (DWORD*)pixels;
+  // Two passes: the white halo first, the black body on top of it.
+  for (int pass = 0; pass < 2; ++pass) {
+    const double shaftRadius = pass == 0 ? 4.0 : 2.0;
+    const double bulbRadius = pass == 0 ? 9.5 : 6.5;
+    const DWORD paint = pass == 0 ? 0xFFFFFFFF : 0xFF000000;
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        if (x == 0 && y == 0) {
+          continue;  // never paint the pixel that is being read
+        }
+        if (distanceToShaft(x, y) <= shaftRadius * shaftRadius ||
+            distanceToBulb(x, y) <= bulbRadius * bulbRadius) {
+          buffer[y * size + x] = paint;
+        }
+      }
+    }
+  }
+  // The bulb shows the colour that is about to go: what the tip is pointing at.
+  if (hasPreview) {
+    const DWORD shown = 0xFF000000 | ((DWORD)GetRValue(preview) << 16) |
+                        ((DWORD)GetGValue(preview) << 8) | GetBValue(preview);
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        if (distanceToBulb(x, y) <= 4.0 * 4.0) {
+          buffer[y * size + x] = shown;
+        }
+      }
+    }
+  }
+
+  ICONINFO info = {};
+  info.fIcon = FALSE;
+  info.hbmMask = mask;
+  info.hbmColor = colour;
+  HCURSOR cursor = (HCURSOR)CreateIconIndirect(&info);
+  DeleteObject(colour);
+  DeleteObject(mask);
+  return cursor;
+}
+
+// The pixel under the tip, read from the desktop itself so it works over any window, not only ours.
+COLORREF ScreenPixel(POINT point) {
+  HDC screen = GetDC(nullptr);
+  const COLORREF colour = GetPixel(screen, point.x, point.y);
+  ReleaseDC(nullptr, screen);
+  return colour;
+}
+
+// The pipette carries the colour it points at in its bulb, rebuilt only when that colour changes.
+void RefreshPickPreview(POINT point) {
+  const COLORREF colour = ScreenPixel(point);
+  if (colour == CLR_INVALID || colour == g_pickPreview) {
+    return;
+  }
+  HCURSOR next = CreatePickCursor(colour, true);
+  if (!next) {
+    return;
+  }
+  HCURSOR previous = g_pickCursor;
+  g_pickCursor = next;
+  g_pickPreview = colour;
+  SetCursor(next);
+  if (previous) {
+    DestroyCursor(previous);
+  }
+}
+
+// The engine's own background: opaque normally, transparent while a colour is keyed, because that
+// is what the composition shows through the page's uncovered pixels.
+void SetEngineBackground(bool transparent) {
+  if (!g_controller) {
+    return;
+  }
+  ICoreWebView2Controller2* controller2 = nullptr;
+  if (SUCCEEDED(g_controller->QueryInterface(__uuidof(ICoreWebView2Controller2),
+                                             reinterpret_cast<void**>(&controller2))) &&
+      controller2) {
+    // Alpha 0 is what the composition shows the desktop through; in windowed hosting it was ignored.
+    const COREWEBVIEW2_COLOR background =
+        transparent ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 15, 20, 27};
+    controller2->put_DefaultBackgroundColor(background);
+    controller2->Release();
+  }
+}
+
+// Everything of the picked colour stops painting, and so does the page's own base: with composition
+// hosting those pixels come out with alpha 0 and the desktop is what shows there. Flat backgrounds
+// are exact; a photo or a canvas of that colour is not reachable from CSS and stays as it is.
+const wchar_t kColourKeyScript[] =
+    L"(function(){"
+    L"if(window.__tinyKeyRestore){window.__tinyKeyRestore();}"
+    L"var cr=%d, cg=%d, cb=%d;"
+    // The key is an SVG filter that turns the picked colour into alpha: absolute difference per
+    // channel (each transfer keeps the positive side of one subtraction), summed, thresholded and
+    // then used as the mask of the original colours. It reads no pixels, so it reaches animated GIFs,
+    // videos, canvas and images from another origin alike.
+    L"var svg=\"<svg xmlns='http://www.w3.org/2000/svg'><filter id='k' "
+    L"color-interpolation-filters='sRGB'>\""
+    L"+\"<feComponentTransfer in='SourceGraphic' result='hi'>\""
+    L"+\"<feFuncR type='linear' slope='1' intercept='\"+(-cr/255)+\"'/>\""
+    L"+\"<feFuncG type='linear' slope='1' intercept='\"+(-cg/255)+\"'/>\""
+    L"+\"<feFuncB type='linear' slope='1' intercept='\"+(-cb/255)+\"'/></feComponentTransfer>\""
+    L"+\"<feComponentTransfer in='SourceGraphic' result='lo'>\""
+    L"+\"<feFuncR type='linear' slope='-1' intercept='\"+(cr/255)+\"'/>\""
+    L"+\"<feFuncG type='linear' slope='-1' intercept='\"+(cg/255)+\"'/>\""
+    L"+\"<feFuncB type='linear' slope='-1' intercept='\"+(cb/255)+\"'/></feComponentTransfer>\""
+    L"+\"<feBlend in='hi' in2='lo' mode='screen' result='diff'/>\""
+    L"+\"<feColorMatrix in='diff' type='matrix' "
+    L"values='1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  1 1 1 0 0' result='sum'/>\""
+    L"+\"<feComponentTransfer in='sum' result='mask'>"
+    L"<feFuncA type='linear' slope='25' intercept='-0.06'/></feComponentTransfer>\""
+    L"+\"<feComposite in='SourceGraphic' in2='mask' operator='in'/></filter></svg>\";"
+    // As a data URL: a filter living in a page element is not resolved when this script is injected
+    // from the host, and the page then renders as if it had no filter at all.
+    L"var keyUrl='url(\"data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)+'#k\")';"
+    // On the root, so the hole goes all the way down: every pixel of that colour anywhere in the page
+    // disappears, whatever element it belonged to, and the page's own base goes too, so what shows
+    // through is the desktop and not the backdrop of whatever sat behind the picture.
+    // On the body, not on <html>: filtering the root brings the viewport's scrollbars back, because
+    // they are painted outside the filtered subtree.
+    L"var rootEl=document.body;"
+    L"var previousFilter=rootEl?rootEl.style.filter:'';"
+    L"if(rootEl){rootEl.style.setProperty('filter',keyUrl,'important');}"
+    L"var style=document.createElement('style');style.id='__tiny_key_style';"
+    L"style.textContent='html,body{background-color:transparent !important;"
+    L"background-image:none !important;scrollbar-width:none !important}"
+    L"::-webkit-scrollbar{display:none !important;width:0 !important;height:0 !important}';"
+    L"document.documentElement.appendChild(style);"
+    L"window.__tinyKeyRestore=function(){style.remove();"
+    L"if(rootEl){rootEl.style.filter=previousFilter;}"
+    L"window.__tinyKeyRestore=null;};"
+    L"})()";
+
+void RunColourKey() {
+  if (!g_webview || !g_keyed) {
+    return;
+  }
+  // Not wsprintfW: it stops at 1024 characters and this script is longer than that.
+  wchar_t script[8192] = {};
+  StringCchPrintfW(script, ARRAYSIZE(script), kColourKeyScript, GetRValue(g_keyColour),
+                   GetGValue(g_keyColour), GetBValue(g_keyColour));
+  g_webview->ExecuteScript(script, nullptr);
+}
+
+void ApplyColourKey(COLORREF colour) {
+  g_keyed = true;
+  g_keyColour = colour;
+  SetEngineBackground(true);
+  RunColourKey();
+}
+
+void ClearColourKey() {
+  if (!g_keyed) {
+    return;
+  }
+  g_keyed = false;
+  if (g_webview) {
+    g_webview->ExecuteScript(
+        L"if (window.__tinyKeyRestore) { window.__tinyKeyRestore(); }", nullptr);
+  }
+  SetEngineBackground(false);
+}
+
+void StopPicking() {
+  if (!g_picking) {
+    return;
+  }
+  g_picking = false;
+  KillTimer(g_window, kPickTimer);
+  ReleaseCapture();
+  SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+}
+
+// Ctrl+Alt+A: armed -> cancel, applied -> remove, otherwise arm the eyedropper.
+void TogglePicking() {
+  if (!g_window) {
+    return;
+  }
+  if (g_picking) {
+    StopPicking();
+    return;
+  }
+  if (g_keyed) {
+    ClearColourKey();
+    return;
+  }
+  g_picking = true;
+  POINT tip = {};
+  GetCursorPos(&tip);
+  g_pickPreview = CLR_INVALID;
+  RefreshPickPreview(tip);
+  if (!g_pickCursor) {
+    g_pickCursor = CreatePickCursor(0, false);
+  }
+  SetCapture(g_window);
+  SetCursor(g_pickCursor);
+  // The bulb follows the pointer on a timer: the low-level hook only sees real device moves, and a
+  // cursor moved by something else would leave the preview showing an old colour.
+  SetTimer(g_window, kPickTimer, 40, nullptr);
+}
 void LoadSettings();            // defined with the other instance-wide helpers below
 
 // Ctrl+Alt+C is the only way in and out of hiding: a hidden window leaves the taskbar and the
@@ -518,6 +793,20 @@ void HandleHotkey(UINT id, LPARAM data) {
     ShowInstance(data != 0);
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
+  } else if (id == kHotkeyPick) {
+    TogglePicking();
+  } else if (id == kCommandPick) {
+    // The screen pixel under the click, read from the desktop so it works over any window. The
+    // cursor steps out of the way first: its tip sits exactly on the pixel being read.
+    ShowCursor(FALSE);
+    const COLORREF picked = ScreenPixel(g_pickAt);
+    ShowCursor(TRUE);
+    StopPicking();
+    if (picked != CLR_INVALID) {
+      ApplyColourKey(picked);
+    }
+  } else if (id == kCommandPickCancel) {
+    StopPicking();
   }
 }
 
@@ -532,6 +821,7 @@ constexpr UINT kHotkeyKeyX = L'X';
 constexpr UINT kHotkeyKeyD = L'D';
 constexpr UINT kHotkeyKeyZ = L'Z';
 constexpr UINT kHotkeyKeyC = L'C';
+constexpr UINT kHotkeyKeyA = L'A';
 
 struct HotkeyChord {
   UINT key;
@@ -543,8 +833,9 @@ constexpr HotkeyChord kHotkeys[] = {
     {kHotkeyKeyD, kHotkeyDuplicate},
     {kHotkeyKeyZ, kHotkeyBack},
     {kHotkeyKeyC, kHotkeyHide},
+    {kHotkeyKeyA, kHotkeyPick},
 };
-constexpr int kHotkeyCount = 5;
+constexpr int kHotkeyCount = 6;
 
 // Only one copy of the app drives Ctrl+Alt+C. The named object is the arbiter: whoever creates it
 // owns the chord, and a copy started later takes it over once the previous owner has exited.
@@ -742,6 +1033,10 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION) {
     const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
     const bool pressed = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+    if (g_picking && pressed && key->vkCode == VK_ESCAPE) {
+      PostMessageW(g_window, kHotkeyMessage, kCommandPickCancel, 0);
+      return 1;
+    }
 
     switch (key->vkCode) {
       case VK_LCONTROL:
@@ -768,6 +1063,15 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
       } else if (!g_hotkeyDown[i]) {  // ignore auto-repeat
         g_hotkeyDown[i] = true;
         if (!HotkeyChordPressed(chord.key)) {
+          break;
+        }
+        if (chord.id == kHotkeyPick) {
+          // Arming belongs to one window: the one in front takes it, and once armed it can still be
+          // cancelled from anywhere, because with the mouse captured another app may be in front.
+          if (g_picking || HotkeysApplyHere()) {
+            PostMessageW(g_window, kHotkeyMessage, kHotkeyPick, 0);
+            return 1;
+          }
           break;
         }
         if (chord.id == kHotkeyHide) {
@@ -1282,6 +1586,24 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
     }
     const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
     const POINT point = mouse->pt;
+    if (g_picking) {
+      // The window holds the capture, so every click on the desktop arrives here: the press is the
+      // colour, the right button (or Escape) gives up, and nothing reaches the app below.
+      if (wparam == WM_MOUSEMOVE) {
+        RefreshPickPreview(point);
+        SetCursor(g_pickCursor);
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+      if (wparam == WM_LBUTTONDOWN) {
+        g_pickAt = point;
+        PostMessageW(g_window, kHotkeyMessage, kCommandPick, 0);
+        return 1;
+      }
+      if (wparam == WM_RBUTTONDOWN) {
+        PostMessageW(g_window, kHotkeyMessage, kCommandPickCancel, 0);
+        return 1;
+      }
+    }
     if (wparam == WM_MOUSEMOVE) {
       if (g_dragActive) {
         if (g_dragMoves) {
@@ -1829,6 +2151,62 @@ void ReportFailure(const wchar_t* what, HRESULT result) {
   MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONERROR);
 }
 
+// Builds the tree the engine paints into. Every step reports its own failing call: a silent
+// failure here is a window that shows nothing at all, which is impossible to diagnose from outside.
+bool StartComposition() {
+  ComPtr<ID3D11Device> d3dDevice;
+  HRESULT result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                     D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                                     D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
+  if (FAILED(result) || !d3dDevice) {
+    ReportFailure(L"D3D11CreateDevice (hardware)", result);
+    result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                               &d3dDevice, nullptr, nullptr);
+    if (FAILED(result) || !d3dDevice) {
+      ReportFailure(L"D3D11CreateDevice (WARP)", result);
+      return false;
+    }
+  }
+  ComPtr<IDXGIDevice> dxgiDevice;
+  result = d3dDevice.As(&dxgiDevice);
+  if (FAILED(result) || !dxgiDevice) {
+    ReportFailure(L"IDXGIDevice", result);
+    return false;
+  }
+  result = DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&g_dcompDevice));
+  if (FAILED(result) || !g_dcompDevice) {
+    ReportFailure(L"DCompositionCreateDevice", result);
+    return false;
+  }
+  result = g_dcompDevice->CreateTargetForHwnd(g_window, TRUE, &g_dcompTarget);
+  if (FAILED(result) || !g_dcompTarget) {
+    ReportFailure(L"IDCompositionDevice::CreateTargetForHwnd", result);
+    return false;
+  }
+  result = g_dcompDevice->CreateVisual(&g_dcompRoot);
+  if (FAILED(result) || !g_dcompRoot) {
+    ReportFailure(L"IDCompositionDevice::CreateVisual", result);
+    return false;
+  }
+  result = g_dcompTarget->SetRoot(g_dcompRoot.Get());
+  if (FAILED(result)) {
+    ReportFailure(L"IDCompositionTarget::SetRoot", result);
+    return false;
+  }
+  result = g_composition->put_RootVisualTarget(g_dcompRoot.Get());
+  if (FAILED(result)) {
+    ReportFailure(L"put_RootVisualTarget", result);
+    return false;
+  }
+  result = g_dcompDevice->Commit();
+  if (FAILED(result)) {
+    ReportFailure(L"IDCompositionDevice::Commit", result);
+    return false;
+  }
+  return true;
+}
+
 void CreateWebView() {
   const std::wstring folder = UserDataFolder();
   if (kCrispText) {
@@ -1848,33 +2226,60 @@ void CreateWebView() {
               PostMessageW(g_window, WM_CLOSE, 0, 0);
               return S_OK;
             }
-            environment->CreateCoreWebView2Controller(
+            ComPtr<ICoreWebView2Environment3> environment3;
+            if (FAILED(environment->QueryInterface(IID_PPV_ARGS(&environment3))) || !environment3) {
+              ReportFailure(L"ICoreWebView2Environment3", E_NOINTERFACE);
+              PostMessageW(g_window, WM_CLOSE, 0, 0);
+              return S_OK;
+            }
+            environment3->CreateCoreWebView2CompositionController(
                 g_window,
-                Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
-                      if (FAILED(controllerResult) || !controller) {
-                        ReportFailure(L"CreateCoreWebView2Controller", controllerResult);
+                Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
+                    [](HRESULT controllerResult,
+                       ICoreWebView2CompositionController* composition) -> HRESULT {
+                      if (FAILED(controllerResult) || !composition) {
+                        ReportFailure(L"CreateCoreWebView2CompositionController", controllerResult);
                         PostMessageW(g_window, WM_CLOSE, 0, 0);
                         return S_OK;
                       }
-                      g_controller = controller;
+                      g_composition = composition;
+                      // The composition controller also answers for the controller API -- bounds,
+                      // visibility, zoom, focus -- so the rest of the file needs no changes.
+                      if (FAILED(composition->QueryInterface(IID_PPV_ARGS(&g_controller))) ||
+                          !g_controller) {
+                        ReportFailure(L"ICoreWebView2Controller", (HRESULT)E_NOINTERFACE);
+                        PostMessageW(g_window, WM_CLOSE, 0, 0);
+                        return S_OK;
+                      }
                       g_controller->get_CoreWebView2(&g_webview);
 
                       RECT bounds = {};
                       GetClientRect(g_window, &bounds);
                       g_controller->put_Bounds(bounds);
                       g_controller->put_IsVisible(TRUE);
+                      // The tree the engine paints into. Everything visible in this window comes
+                      // from here; the window itself has no GDI surface.
+                      if (!StartComposition()) {
+                        PostMessageW(g_window, WM_CLOSE, 0, 0);
+                        return S_OK;
+                      }
+                      EventRegistrationToken cursorToken = {};
+                      g_composition->add_CursorChanged(
+                          Callback<ICoreWebView2CursorChangedEventHandler>(
+                              [](ICoreWebView2CompositionController* sender,
+                                 IUnknown*) -> HRESULT {
+                                HCURSOR cursor = nullptr;
+                                if (sender && SUCCEEDED(sender->get_Cursor(&cursor)) && cursor) {
+                                  g_pageCursor = cursor;
+                                }
+                                return S_OK;
+                              })
+                              .Get(),
+                          &cursorToken);
                       // The engine paints its own background before the content catches up, and by
                       // default that is white: growing the window showed a pale strip on the freshly
                       // exposed edge. Same colour as the window, so a resize looks even.
-                      ICoreWebView2Controller2* controller2 = nullptr;
-                      if (SUCCEEDED(g_controller->QueryInterface(__uuidof(ICoreWebView2Controller2),
-                                                                 reinterpret_cast<void**>(&controller2))) &&
-                          controller2) {
-                        const COREWEBVIEW2_COLOR background = {255, 15, 20, 27};
-                        controller2->put_DefaultBackgroundColor(background);
-                        controller2->Release();
-                      }
+                      SetEngineBackground(false);
                       // The engine has to be told, because the window's own focus notice arrives
                       // before the controller exists: without this the address field is drawn
                       // focused but the keystrokes go nowhere until you click the window.
@@ -1925,6 +2330,7 @@ void CreateWebView() {
                                 }
                                 // Pages keep widening as they load, so the fit is measured
                                 // in a few passes instead of once.
+                                RunColourKey();  // a new document starts without the key
                                 StartFit();
                                 return S_OK;
                               })
@@ -1954,8 +2360,67 @@ void CreateWebView() {
   }
 }
 
+// Without a child window there is nobody else to deliver pointer input: every mouse message is
+// translated into the engine's own vocabulary, in client coordinates.
+void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (!g_composition) {
+    return;
+  }
+  POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  COREWEBVIEW2_MOUSE_EVENT_KIND kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
+  COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
+  UINT32 data = 0;
+  switch (message) {
+    case WM_MOUSEMOVE:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
+      break;
+    case WM_LBUTTONDOWN:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN;
+      keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
+      break;
+    case WM_LBUTTONUP:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP;
+      break;
+    case WM_LBUTTONDBLCLK:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK;
+      keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
+      break;
+    case WM_RBUTTONDOWN:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN;
+      keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON;
+      break;
+    case WM_RBUTTONUP:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP;
+      break;
+    case WM_MBUTTONDOWN:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN;
+      keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON;
+      break;
+    case WM_MBUTTONUP:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP;
+      break;
+    case WM_MOUSEWHEEL: {
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL;
+      data = (UINT32)(SHORT)HIWORD(wparam);
+      POINT screen = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ScreenToClient(g_window, &screen);
+      point = screen;
+      break;
+    }
+    case WM_MOUSELEAVE:
+      kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE;
+      point = {0, 0};
+      break;
+    default:
+      return;
+  }
+  g_composition->SendMouseInput(kind, keys, data, point);
+}
+
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
   switch (message) {
+    case WM_ERASEBKGND:
+      return 1;  // nothing of our own to paint: the composition is the window
     case WM_SIZE: {
       if (g_controller) {
         RECT bounds = {};
@@ -1969,7 +2434,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       return 0;
     }
     case WM_TIMER:
-      if (wparam == kFitTimer) {
+      if (wparam == kPickTimer) {
+        POINT tip = {};
+        if (GetCursorPos(&tip)) {
+          RefreshPickPreview(tip);
+        }
+      } else if (wparam == kFitTimer) {
         KillTimer(window, kFitTimer);
         OnFitTimer();
       } else if (wparam == kResizeTimer) {
@@ -1984,6 +2454,45 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     case kHotkeyMessage:
       HandleHotkey((UINT)wparam, lparam);
       return 0;
+    case WM_SETCURSOR:
+      if (g_picking && g_pickCursor) {
+        SetCursor(g_pickCursor);
+        return TRUE;
+      }
+      if (LOWORD(lparam) == HTCLIENT && g_pageCursor) {
+        // No child window to ask any more: the engine publishes the cursor it wants and this is the
+        // only place it can be shown, or links and text fields lose their pointer.
+        SetCursor(g_pageCursor);
+        return TRUE;
+      }
+      break;
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSELEAVE: {
+      static bool tracking = false;
+      if (message == WM_MOUSEMOVE && !tracking) {
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
+        tracking = TrackMouseEvent(&track);
+      } else if (message == WM_MOUSELEAVE) {
+        tracking = false;
+      }
+      if (message == WM_LBUTTONDOWN) {
+        // A drag that starts in the page can end anywhere: the engine needs the moves outside the
+        // window too, or a text selection stops at the border.
+        SetCapture(window);
+      } else if (message == WM_LBUTTONUP) {
+        ReleaseCapture();
+      }
+      ForwardMouse(message, wparam, lparam);
+      return 0;
+    }
     case WM_SETFOCUS:
       if (g_controller) {
         g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -2006,6 +2515,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (g_chordOwner) {
         CloseHandle(g_chordOwner);  // frees the name so another copy can take the chord over
         g_chordOwner = nullptr;
+      }
+      if (g_pickCursor) {
+        DestroyCursor(g_pickCursor);
+        g_pickCursor = nullptr;
       }
       PostQuitMessage(0);
       return 0;
@@ -2063,7 +2576,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   windowClass.hInstance = instance;
   windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   windowClass.lpszClassName = kWindowClass;
-  windowClass.hbrBackground = CreateSolidBrush(RGB(15, 20, 27));  // paints instantly, before the engine is up
+  // No background brush: with composition hosting the window has no surface of its own, and a
+  // brush here is exactly what would sit between the engine's transparent pixels and the desktop.
+  windowClass.hbrBackground = nullptr;
   windowClass.hIcon = iconBig;
   windowClass.hIconSm = iconSmall;
   if (!RegisterClassExW(&windowClass)) {
@@ -2083,8 +2598,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   } else {
     DefaultPlacement(width, height, &x, &y);
   }
+  // No redirection bitmap: the window owns no GDI surface, so what shows is exactly the composition
+  // tree, alpha included. Without this the page could never be see-through to the desktop.
   g_window = CreateWindowExW(
-      WS_EX_TOPMOST, kWindowClass, kTitle, WS_POPUP,
+      WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, kWindowClass, kTitle, WS_POPUP,
       x, y, width, height,
       nullptr, nullptr, instance, nullptr);
   if (!g_window) {

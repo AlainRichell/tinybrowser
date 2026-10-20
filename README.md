@@ -22,6 +22,12 @@ se copia a cualquier PC con Windows y anda.
   escalan: sus controles mantienen el mismo tamaño, tenga la ventana el tamaño que tenga.
 - `Ctrl+Alt+S` vuelve a la barra desde cualquier página, `Ctrl+Alt+Z` va atrás, `Ctrl+Alt+D` duplica
   en otra ventana y `Ctrl+Alt+X` cierra.
+- `Ctrl+Alt+A` arma el gotero: el puntero se vuelve una pipeta y el clic en cualquier parte de la
+  pantalla toma ese color. La punta de la pipeta es exactamente el píxel que se lee, y el bulbo
+  muestra en vivo el color que va a desaparecer. En **esa** ventana (y en ninguna otra) ese color
+  pasa a ser transparente: se ve lo que haya detrás. Mientras dura, las barras de scroll (vertical y
+  horizontal) se ocultan: una barra dibujada quedaría encima del agujero. `Escape` o el botón derecho
+  cancelan sin elegir, y `Ctrl+Alt+A` otra vez devuelve la ventana a la normalidad, con sus barras.
 - `Ctrl+Alt+C` las oculta a todas: cada copia abierta sale de la pantalla y de la barra de tareas,
   y el mismo `Ctrl+Alt+C` las vuelve a mostrar todas juntas. Es la única forma de ocultarlas y de
   traerlas de vuelta; al volver, la que retoma el teclado es la que estaba en uso.
@@ -54,6 +60,24 @@ se copia a cualquier PC con Windows y anda.
   nada: no hay copias superpuestas.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
+
+### Cómo funciona la transparencia por color
+
+La ventana no dibuja nada por su cuenta: el motor pinta en un árbol de DirectComposition (hosting por
+composición) y la ventana no tiene superficie GDI, así que lo que se ve es exactamente esa
+composición, con su canal alfa. Por eso el color elegido puede volverse un agujero de verdad.
+
+El filtro va sobre la página entera, no sobre un elemento: el color elegido se vuelve transparente
+allí donde aparezca, sea el fondo de un div, los píxeles de un GIF o el texto. Es un filtro SVG que
+calcula píxel por píxel la distancia al color y la convierte en transparencia, y no necesita leer
+píxeles, así que alcanza igual a GIF animados, videos, canvas e imágenes de otro origen.
+
+Y como la base de la página también deja de pintar, el agujero no se queda en el fondo de la página:
+lo que se ve a través es el escritorio. Dicho al revés: si había algo debajo de ese color, también
+desaparece.
+
+La comparación tiene una tolerancia de unos 5 niveles por canal, porque la pantalla puede devolver un
+color que difiere en una o dos unidades del valor que tenía en la página.
 
 ## Opciones
 
