@@ -10,9 +10,11 @@
 #define _UNICODE
 
 #include <windows.h>
+#include <commdlg.h>
 #include <d3d11.h>
 #include <dcomp.h>
 #include <objbase.h>
+#include <shlobj.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #include <strsafe.h>
@@ -64,6 +66,7 @@ constexpr UINT kHotkeyDuplicate = 3;  // Ctrl+Alt+D
 constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
 constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
 constexpr UINT kHotkeyPick = 6;       // Ctrl+Alt+A
+constexpr UINT kHotkeyState = 7;      // Ctrl+Alt+G
 // CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
@@ -129,6 +132,9 @@ bool g_showingBar = false;     // the document on screen is our own bar, not a p
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
 double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
+// Zoom a .to brought in. While it is set the fit keeps its hands off the page: a window restored
+// from a snapshot has to keep the zoom it was saved with, not the one its width would imply.
+int g_stateZoom = 0;  // thousandths of the factor, 0 when the page is fitted as usual
 
 void ResetFit();  // defined next to the fit helpers below
 
@@ -185,6 +191,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div id="commands" hidden>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
 <div><span class="k">Ctrl+Alt+D</span> duplicar</div>
+<div><span class="k">Ctrl+Alt+G</span> guardar / cargar</div>
 <div><span class="k">Ctrl+Alt+Z</span> atr&aacute;s</div>
 <div><span class="k">Ctrl+Alt+C</span> ocultar</div>
 <div><span class="k">Ctrl+Alt+A</span> gotero</div>
@@ -486,6 +493,7 @@ void Navigate(const std::wstring& target) {
   }
   g_url = url;
   g_showingBar = false;
+  g_stateZoom = 0;  // a page that is opened is fitted; only a .to says otherwise
   ResetFit();
   SetPageZoomControl(true);
   ResizeIfCanonical(kWidth, kHeight);  // a page needs the room
@@ -499,6 +507,7 @@ void RunInPage(const wchar_t* script) {
 }
 
 void DuplicateInNewInstance();  // defined with the placement helpers below
+void StateChord();  // Ctrl+Alt+G: freezes a page into a .to file, or brings one back
 
 // Windows ships no eyedropper cursor, and a crosshair does not say "pick a colour". The pipette is
 // drawn here: a shaft with a round bulb at the end, black over a white halo so it reads on any
@@ -814,6 +823,8 @@ void HandleHotkey(UINT id, LPARAM data) {
     PostMessageW(g_window, WM_CLOSE, 0, 0);
   } else if (id == kHotkeyDuplicate) {
     DuplicateInNewInstance();
+  } else if (id == kHotkeyState) {
+    StateChord();
   } else if (id == kHotkeyBack) {
     if (!g_url.empty()) {
       RunInPage(L"history.back()");
@@ -858,6 +869,7 @@ constexpr UINT kHotkeyKeyD = L'D';
 constexpr UINT kHotkeyKeyZ = L'Z';
 constexpr UINT kHotkeyKeyC = L'C';
 constexpr UINT kHotkeyKeyA = L'A';
+constexpr UINT kHotkeyKeyG = L'G';
 
 struct HotkeyChord {
   UINT key;
@@ -870,8 +882,9 @@ constexpr HotkeyChord kHotkeys[] = {
     {kHotkeyKeyZ, kHotkeyBack},
     {kHotkeyKeyC, kHotkeyHide},
     {kHotkeyKeyA, kHotkeyPick},
+    {kHotkeyKeyG, kHotkeyState},
 };
-constexpr int kHotkeyCount = 6;
+constexpr int kHotkeyCount = 7;
 
 // Only one copy of the app drives Ctrl+Alt+C. The named object is the arbiter: whoever creates it
 // owns the chord, and a copy started later takes it over once the previous owner has exited.
@@ -1899,6 +1912,15 @@ void StartFit() {
     return;
   }
   ResetFit();
+  if (g_stateZoom > 0) {
+    // Restored from a .to: the zoom in the file is the whole point, so the page is not measured.
+    // It holds while the window is resized too, and the fit takes over again the next time an
+    // address is opened.
+    if (g_controller) {
+      g_controller->put_ZoomFactor(g_stateZoom / 1000.0);
+    }
+    return;
+  }
   SetTimer(g_window, kFitTimer, kFitDelayFirst, nullptr);
 }
 void OnFitTimer() {
@@ -1974,6 +1996,352 @@ void FitAndPlace() {
   int y = 0;
   DefaultPlacement(width, height, &x, &y);
   SetWindowPos(g_window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// A .to file ("tiny object") is one window frozen in a file: the page it shows, the rectangle it
+// occupies, the zoom it is drawn at and the colour it made transparent. Plain key=value text,
+// written with the same profile calls as the options file, so there is no parser here and it can be
+// read in Notepad.
+constexpr wchar_t kStateSection[] = L"tiny";
+constexpr wchar_t kStateFileExtension[] = L".to";
+constexpr wchar_t kStateProgId[] = L"tinybrowser.to";
+constexpr wchar_t kStateLastSection[] = L"state";  // where the last one came from
+
+struct TinyState {
+  std::wstring url;
+  RECT rect = {};
+  bool hasRect = false;
+  bool keyed = false;
+  COLORREF keyColour = 0;
+  int keyRange = -1;  // -1: the file carries none, so the option stays as it is
+  int zoom = 0;       // thousandths of the factor, 0 when none was saved
+};
+
+bool IsStatePath(const std::wstring& text) {
+  const size_t length = std::wcslen(kStateFileExtension);
+  if (text.size() <= length) {
+    return false;
+  }
+  return lstrcmpiW(text.c_str() + text.size() - length, kStateFileExtension) == 0;
+}
+
+// A snapshot may come from a bigger monitor, or from a spot this desktop no longer has: the
+// rectangle is pulled back inside the desktop instead of opening a window nothing could reach.
+RECT KeepOnDesktop(const RECT& wanted) {
+  RECT desktop = {};
+  DesktopBounds(&desktop);
+  int width = wanted.right - wanted.left;
+  int height = wanted.bottom - wanted.top;
+  const int desktopWidth = desktop.right - desktop.left;
+  const int desktopHeight = desktop.bottom - desktop.top;
+  if (width > desktopWidth) width = desktopWidth;
+  if (height > desktopHeight) height = desktopHeight;
+  if (width < kMinWidth) width = kMinWidth;
+  if (height < kMinHeight) height = kMinHeight;
+  int left = wanted.left;
+  int top = wanted.top;
+  if (left + width > desktop.right) left = desktop.right - width;
+  if (top + height > desktop.bottom) top = desktop.bottom - height;
+  if (left < desktop.left) left = desktop.left;
+  if (top < desktop.top) top = desktop.top;
+  const RECT clamped = {left, top, left + width, top + height};
+  return clamped;
+}
+
+bool ReadState(const std::wstring& path, TinyState* state) {
+  if (!state || path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return false;
+  }
+  wchar_t url[2048] = {};
+  if (!GetPrivateProfileStringW(kStateSection, L"Url", L"", url, ARRAYSIZE(url), path.c_str())) {
+    return false;  // no [tiny] section: not one of ours
+  }
+  state->url = url;
+  const int left = (int)GetPrivateProfileIntW(kStateSection, L"Left", 0, path.c_str());
+  const int top = (int)GetPrivateProfileIntW(kStateSection, L"Top", 0, path.c_str());
+  const int width = (int)GetPrivateProfileIntW(kStateSection, L"Width", 0, path.c_str());
+  const int height = (int)GetPrivateProfileIntW(kStateSection, L"Height", 0, path.c_str());
+  state->hasRect = width >= kMinWidth && height >= kMinHeight;
+  if (state->hasRect) {
+    state->rect.left = left;
+    state->rect.top = top;
+    state->rect.right = left + width;
+    state->rect.bottom = top + height;
+  }
+  state->keyed = GetPrivateProfileIntW(kStateSection, L"Keyed", 0, path.c_str()) != 0;
+  state->keyColour = (COLORREF)GetPrivateProfileIntW(kStateSection, L"KeyColour", 0, path.c_str());
+  const int range =
+      (int)GetPrivateProfileIntW(kStateSection, L"KeyRange", kKeyRangeMax + 1, path.c_str());
+  state->keyRange = range <= kKeyRangeMax ? range : -1;
+  // Wider than the fit's own limits on purpose: Ctrl+wheel can zoom a page past 100 %, and a state
+  // that cannot remember that would come back looking nothing like it was saved.
+  const int zoom = (int)GetPrivateProfileIntW(kStateSection, L"Zoom", 0, path.c_str());
+  if (zoom >= 50 && zoom <= 5000) {
+    state->zoom = zoom;
+  }
+  return !state->url.empty();
+}
+
+// The file is written whole: a key the snapshot does not carry cannot survive from an older save.
+bool WriteState(const std::wstring& path, const TinyState& state) {
+  if (path.empty()) {
+    return false;
+  }
+  DeleteFileW(path.c_str());
+  wchar_t value[64] = {};
+  WritePrivateProfileStringW(kStateSection, L"Version", L"1", path.c_str());
+  WritePrivateProfileStringW(kStateSection, L"Url", state.url.c_str(), path.c_str());
+  if (state.hasRect) {
+    wsprintfW(value, L"%d", (int)state.rect.left);
+    WritePrivateProfileStringW(kStateSection, L"Left", value, path.c_str());
+    wsprintfW(value, L"%d", (int)state.rect.top);
+    WritePrivateProfileStringW(kStateSection, L"Top", value, path.c_str());
+    wsprintfW(value, L"%d", (int)(state.rect.right - state.rect.left));
+    WritePrivateProfileStringW(kStateSection, L"Width", value, path.c_str());
+    wsprintfW(value, L"%d", (int)(state.rect.bottom - state.rect.top));
+    WritePrivateProfileStringW(kStateSection, L"Height", value, path.c_str());
+  }
+  if (state.zoom > 0) {
+    wsprintfW(value, L"%d", state.zoom);
+    WritePrivateProfileStringW(kStateSection, L"Zoom", value, path.c_str());
+  }
+  wsprintfW(value, L"%d", state.keyed ? 1 : 0);
+  WritePrivateProfileStringW(kStateSection, L"Keyed", value, path.c_str());
+  wsprintfW(value, L"%u", (unsigned)state.keyColour);
+  WritePrivateProfileStringW(kStateSection, L"KeyColour", value, path.c_str());
+  wsprintfW(value, L"%d", state.keyRange);
+  WritePrivateProfileStringW(kStateSection, L"KeyRange", value, path.c_str());
+  return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+void RememberState(const std::wstring& path) {
+  wchar_t settings[MAX_PATH] = {};
+  SettingsPath(settings);
+  if (settings[0]) {
+    WritePrivateProfileStringW(kStateLastSection, L"Last", path.c_str(), settings);
+  }
+}
+
+// False when nothing is remembered or the file is gone: then there is nothing to bring back.
+bool LastStatePath(wchar_t* path, int size) {
+  wchar_t settings[MAX_PATH] = {};
+  SettingsPath(settings);
+  path[0] = 0;
+  if (!settings[0]) {
+    return false;
+  }
+  GetPrivateProfileStringW(kStateLastSection, L"Last", L"", path, size, settings);
+  return path[0] != 0 && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+// The suggested name is the site's own, so a folder of them reads as the sites it holds.
+std::wstring NameFromUrl(const std::wstring& url) {
+  size_t start = url.find(L"://");
+  start = start == std::wstring::npos ? 0 : start + 3;
+  const size_t end = url.find_first_of(L"/?#", start);
+  std::wstring name =
+      url.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+  if (name.compare(0, 4, L"www.") == 0) {
+    name = name.substr(4);
+  }
+  for (size_t i = 0; i < name.size(); ++i) {
+    const wchar_t ch = name[i];
+    // What Windows refuses in a file name, the path separator included.
+    if (ch < 32 || ch == L':' || ch == L'*' || ch == L'?' || ch == L'"' || ch == L'<' ||
+        ch == L'>' || ch == L'|' || ch == L'/' || ch == static_cast<wchar_t>(92)) {
+      name[i] = L'_';
+    }
+  }
+  if (name.empty()) {
+    name = L"tiny";
+  }
+  name += kStateFileExtension;
+  return name;
+}
+
+// The folder of the last .to is where the next one goes, so a set of them stays together.
+std::wstring StateFolder() {
+  wchar_t last[MAX_PATH * 2] = {};
+  if (!LastStatePath(last, ARRAYSIZE(last))) {
+    return std::wstring();
+  }
+  const std::wstring previous(last);
+  const size_t slash = previous.find_last_of(static_cast<wchar_t>(92));
+  return slash == std::wstring::npos ? std::wstring() : previous.substr(0, slash);
+}
+
+bool AskStateToSave(wchar_t* path, DWORD size, const std::wstring& suggested,
+                    const std::wstring& folder) {
+  lstrcpynW(path, suggested.c_str(), (int)size);
+  OPENFILENAMEW dialog = {};
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = g_window;
+  dialog.lpstrFilter = L"tiny object (*.to)\0*.to\0Todos los archivos\0*.*\0";
+  dialog.lpstrFile = path;
+  dialog.nMaxFile = size;
+  dialog.lpstrDefExt = L"to";
+  dialog.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
+  dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  // The file dialog is an ordinary window and this one is always on top: it steps down while the
+  // dialog is open, or it would sit over the very fields being typed in.
+  SetWindowPos(g_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  const BOOL picked = GetSaveFileNameW(&dialog);
+  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  return picked == TRUE;
+}
+
+bool AskStateToOpen(wchar_t* path, DWORD size, const std::wstring& folder) {
+  path[0] = 0;
+  OPENFILENAMEW dialog = {};
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = g_window;
+  dialog.lpstrFilter = L"tiny object (*.to)\0*.to\0Todos los archivos\0*.*\0";
+  dialog.lpstrFile = path;
+  dialog.nMaxFile = size;
+  dialog.lpstrDefExt = L"to";
+  dialog.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  // The file dialog is an ordinary window and this one is always on top: it steps down while the
+  // dialog is open, or it would sit over the very fields being typed in.
+  SetWindowPos(g_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  const BOOL picked = GetOpenFileNameW(&dialog);
+  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  return picked == TRUE;
+}
+
+// Whether the extension is still free. Nothing there means it is; another program's progid means it
+// is not ours to take.
+bool ExtensionIsFree(HKEY root, const wchar_t* subkey) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return true;
+  }
+  wchar_t owner[128] = {};
+  DWORD bytes = sizeof(owner);
+  const LSTATUS status =
+      RegQueryValueExW(key, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(owner), &bytes);
+  RegCloseKey(key);
+  return status != ERROR_SUCCESS || std::wcscmp(owner, kStateProgId) == 0;
+}
+
+void SetKeyDefault(HKEY root, const std::wstring& subkey, const std::wstring& value) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(root, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) !=
+      ERROR_SUCCESS) {
+    return;
+  }
+  RegSetValueExW(key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                 (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+  RegCloseKey(key);
+}
+
+// Double-clicking a .to in Explorer has to open it with this app, which takes a per-user
+// association: no admin rights and nothing system-wide. An extension another program already owns
+// is left alone instead of taken over, and the machine-wide view is checked as well because that is
+// the one Explorer ends up obeying.
+bool EnsureAssociation() {
+  if (!ExtensionIsFree(HKEY_CURRENT_USER, L"Software\\Classes\\.to") ||
+      !ExtensionIsFree(HKEY_CLASSES_ROOT, L".to")) {
+    return false;
+  }
+  wchar_t exe[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+    return false;
+  }
+  const std::wstring executable(exe);
+  const std::wstring classes = L"Software\\Classes\\";
+  SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
+  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, L"tiny object");
+  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon",
+                L"\"" + executable + L"\",0");
+  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command",
+                L"\"" + executable + L"\" \"%1\"");
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return true;
+}
+
+// Everything the file holds, in the order the window can take it: the margin first (an app-wide
+// option, exactly what the slider sets), then the page, then the rectangle -- opening a page may
+// resize the window on its own -- and the zoom last, because the fit applies it once the page
+// finishes opening.
+void ApplyState(const TinyState& state) {
+  if (!g_window || !g_webview || state.url.empty()) {
+    return;
+  }
+  if (state.keyRange >= 0) {
+    SetKeyRange(state.keyRange);
+  }
+  g_keyed = state.keyed;
+  g_keyColour = state.keyColour;
+  SetEngineBackground(g_keyed);
+  Navigate(state.url);
+  g_stateZoom = state.zoom;  // after Navigate, which clears it: this page keeps the zoom it had
+  if (state.hasRect) {
+    const RECT rect = KeepOnDesktop(state.rect);
+    SetWindowPos(g_window, nullptr, rect.left, rect.top, rect.right - rect.left,
+                 rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+}
+
+// Ctrl+Alt+G on a page: freeze this window into a file.
+void SaveState() {
+  if (!g_window || g_showingBar || g_url.empty()) {
+    return;  // there is no page to photograph
+  }
+  TinyState state;
+  state.url = g_url;
+  RECT rect = {};
+  if (GetWindowRect(g_window, &rect)) {
+    state.rect = rect;
+    state.hasRect = true;
+  }
+  state.keyed = g_keyed;
+  state.keyColour = g_keyColour;
+  state.keyRange = g_keyRange;
+  if (g_controller) {
+    double zoom = 1.0;
+    if (SUCCEEDED(g_controller->get_ZoomFactor(&zoom))) {
+      state.zoom = (int)(zoom * 1000.0 + 0.5);
+    }
+  }
+  wchar_t path[MAX_PATH * 2] = {};
+  if (!AskStateToSave(path, ARRAYSIZE(path), NameFromUrl(g_url), StateFolder())) {
+    return;
+  }
+  if (!IsStatePath(path)) {
+    StringCchCatW(path, ARRAYSIZE(path), kStateFileExtension);
+  }
+  if (WriteState(path, state)) {
+    RememberState(path);
+    EnsureAssociation();  // a file nothing can open is half a feature
+  }
+}
+
+// One chord, two meanings: a page can be photographed, the bar has nothing to photograph, so there
+// it brings the last one back -- the same file Explorer opens by double click.
+void StateChord() {
+  if (!g_window) {
+    return;
+  }
+  if (!g_showingBar) {
+    SaveState();
+    return;
+  }
+  TinyState state;
+  wchar_t last[MAX_PATH * 2] = {};
+  if (LastStatePath(last, ARRAYSIZE(last)) && ReadState(last, &state)) {
+    ApplyState(state);
+    return;
+  }
+  const std::wstring folder = StateFolder();
+  wchar_t picked[MAX_PATH * 2] = {};
+  if (!AskStateToOpen(picked, ARRAYSIZE(picked), folder)) {
+    return;
+  }
+  if (ReadState(picked, &state)) {
+    ApplyState(state);
+    RememberState(picked);
+  }
 }
 
 // Where the next duplicate goes. Each open copy reserves one window-sized "ghost" area on each of
@@ -2332,8 +2700,9 @@ void CreateWebView() {
                           &cursorToken);
                       // The engine paints its own background before the content catches up, and by
                       // default that is white: growing the window showed a pale strip on the freshly
-                      // exposed edge. Same colour as the window, so a resize looks even.
-                      SetEngineBackground(false);
+                      // exposed edge. Same colour as the window, so a resize looks even, and
+                      // transparent when a .to brought a colour already keyed in.
+                      SetEngineBackground(g_keyed);
                       // The engine has to be told, because the window's own focus notice arrives
                       // before the controller exists: without this the address field is drawn
                       // focused but the keystrokes go nowhere until you click the window.
@@ -2395,7 +2764,9 @@ void CreateWebView() {
                       if (g_startTarget.empty()) {
                         ShowBar();
                       } else {
+                        const int stateZoom = g_stateZoom;  // Navigate drops it
                         Navigate(g_startTarget);
+                        g_stateZoom = stateZoom;  // ... and a .to keeps its own
                       }
                       return S_OK;
                     })
@@ -2586,6 +2957,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LoadSettings();
+  // A machine that already uses .to files gets the association pointed back at this exe when it
+  // was moved; one that never saved one keeps its registry untouched.
+  wchar_t rememberedState[MAX_PATH * 2] = {};
+  if (LastStatePath(rememberedState, ARRAYSIZE(rememberedState))) {
+    EnsureAssociation();
+  }
   const std::wstring arguments = Trim(commandLine ? commandLine : L"");
   if (arguments.compare(0, 8, L"--place ") == 0) {
     // A duplicate asks for its own rectangle so the copy does not land on top of the original.
@@ -2606,6 +2983,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   }
   if (g_startTarget.size() >= 2 && g_startTarget.front() == L'"' && g_startTarget.back() == L'"') {
     g_startTarget = g_startTarget.substr(1, g_startTarget.size() - 2);
+  }
+  // Explorer hands a double-clicked .to over as the only argument, and it is a snapshot rather
+  // than an address: opening it is what the file is for.
+  if (IsStatePath(g_startTarget)) {
+    TinyState state;
+    if (ReadState(g_startTarget, &state)) {
+      const std::wstring statePath = g_startTarget;
+      g_startTarget = state.url;
+      if (state.hasRect) {
+        g_placedRect = KeepOnDesktop(state.rect);
+        g_hasPlacedRect = true;
+      }
+      g_stateZoom = state.zoom;
+      g_keyed = state.keyed;
+      g_keyColour = state.keyColour;
+      if (state.keyRange >= 0 && state.keyRange != g_keyRange) {
+        g_keyRange = state.keyRange;
+        SaveSettings();  // the margin is app-wide, exactly like the slider
+      }
+      RememberState(statePath);
+    } else {
+      g_startTarget.clear();  // unreadable: the bar, not a search for a path
+    }
   }
   // The page is known from the command line, long before the engine exists. Remembering it here is
   // what lets Ctrl+Alt+D work in the first second of a new window instead of waiting for that page

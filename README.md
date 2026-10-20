@@ -61,6 +61,24 @@ se copia a cualquier PC con Windows y anda.
 - Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
   siguen funcionando desde cualquier programa, como antes.
 
+### Guardar un estado: los archivos `.to`
+
+- `Ctrl+Alt+G` con una página abierta abre el diálogo de guardar y escribe un archivo **`.to`**
+  (*tiny object*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
+  el tamaño, el zoom, y el color que hayas transparentado con su rango.
+- Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
+  ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno; si
+  movés el exe, guardá otro para que vuelva a apuntar ahí. Si otro programa ya era dueño de `.to`, no
+  se le toca: en ese caso el archivo se abre arrastrándolo sobre `tinybrowser.exe`.
+- `Ctrl+Alt+G` en la pantalla de inicio es la otra mitad: carga el último `.to`. Si todavía no hay
+  ninguno guardado, pregunta cuál.
+- El archivo es texto (`[tiny]` y una línea por dato): se puede abrir con el Notepad y cambiar la
+  dirección a mano.
+- Dos cosas que conviene saber: el zoom guardado manda mientras esa página esté abierta (aunque
+  redimensiones la ventana; el ajuste automático vuelve al abrir otra dirección en la barra), y el
+  rango del color es una opción compartida, así que cargar un `.to` con otro rango lo cambia en
+  todas las ventanas, igual que el control.
+
 ### Cómo funciona la transparencia por color
 
 La ventana no dibuja nada por su cuenta: el motor pinta en un árbol de DirectComposition (hosting por
@@ -187,7 +205,7 @@ página de 24.667 elementos: **470 ms por pasada, a 65 ms**, con el mismo result
 ## Estado
 
 Anda: navegar, buscar, atrás/adelante/recargar, scroll, zoom, arrastre, redimensionado (mínimo
-60x60), varias ventanas a la vez con duplicar la actual en otra, atajos, sesiones persistentes,
+60x60), varias ventanas a la vez con duplicar la actual en otra, guardar la ventana en un `.to` y volver a abrirla como estaba, atajos, sesiones persistentes,
 icono propio y cierre limpio (sin procesos huérfanos).
 
 Todavía no: historial navegable, autocompletado en la barra, pestañas ni diálogos para elegir el

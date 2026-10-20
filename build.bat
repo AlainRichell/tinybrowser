@@ -44,7 +44,7 @@ cl /nologo /O2 /MT /EHsc /W4 /I"%ROOT%sdk\include" ^
    "%ROOT%obj\tinybrowser.res" ^
    "%ROOT%sdk\x64\WebView2LoaderStatic.lib" ^
    ole32.lib oleaut32.lib user32.lib gdi32.lib shell32.lib shlwapi.lib version.lib advapi32.lib ^
-   d3d11.lib dcomp.lib
+   comdlg32.lib d3d11.lib dcomp.lib
 if errorlevel 1 (
   echo Fallo la compilacion.
   exit /b 1
