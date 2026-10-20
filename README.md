@@ -82,8 +82,9 @@ se copia a cualquier PC con Windows y anda.
   comas.
 - Dos cosas que conviene saber: el zoom guardado manda mientras esa página esté abierta (aunque
   redimensiones la ventana; el ajuste automático vuelve al abrir otra dirección en la barra), y el
-  rango del color es una opción compartida, así que cargar un `.to` con otro rango lo cambia en
-  todas las ventanas, igual que el control.
+  rango del color que trae el `.to` vale **sólo para esa ventana**: no se escribe en
+  `tinybrowser.ini` ni cambia el de las demás ventanas. Si movés el control **Rango del color** en
+  esa ventana, ahí sí pasa a ser el valor compartido, como siempre.
 
 ### Cómo funciona la transparencia por color
 
@@ -106,7 +107,8 @@ desaparece.
 La comparación tiene una tolerancia, porque la pantalla puede devolver un color que difiere en una o
 dos unidades del valor que tenía en la página. Ese margen es el control **Rango del color** de las
 opciones: 0 quita sólo el color exacto y cada punto agrega un nivel por canal, hasta 40. Se guarda en
-`tinybrowser.ini` como `KeyRange` y vale para todas las instancias (por defecto 5).
+`tinybrowser.ini` como `KeyRange` y vale para todas las instancias (por defecto 5). Un `.to` puede
+traer el suyo: ese manda sólo en la ventana que lo abrió, sin tocar el archivo ni las demás.
 
 ## Opciones
 

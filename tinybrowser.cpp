@@ -107,6 +107,10 @@ bool g_pushOthers = false;    // option: the window being dragged moves its neig
 // the page painted, so some margin is what makes it usable at all.
 int g_keyRange = 5;
 constexpr int kKeyRangeMax = 40;
+// The margin a .to brought with it belongs to that snapshot, not to the app: it stays in this window
+// and never reaches the options file the other copies read. Moving the slider is what makes the
+// margin the shared one again.
+bool g_keyRangeLocal = false;
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 // Composition hosting: the engine draws into this DirectComposition tree instead of a child HWND.
@@ -1043,8 +1047,12 @@ void LoadSettings() {
   }
   g_blockOverlap = GetPrivateProfileIntW(kSettingsSection, L"NoOverlap", 1, path) != 0;
   g_pushOthers = GetPrivateProfileIntW(kSettingsSection, L"PushOthers", 0, path) != 0;
-  const int range = GetPrivateProfileIntW(kSettingsSection, L"KeyRange", 5, path);
-  g_keyRange = range < 0 ? 0 : (range > kKeyRangeMax ? kKeyRangeMax : range);
+  // A window that opened a snapshot keeps the margin that .to brought: the file answers for the
+  // app, and this window already has its own answer.
+  if (!g_keyRangeLocal) {
+    const int range = GetPrivateProfileIntW(kSettingsSection, L"KeyRange", 5, path);
+    g_keyRange = range < 0 ? 0 : (range > kKeyRangeMax ? kKeyRangeMax : range);
+  }
 }
 
 void SaveSettings() {
@@ -1092,15 +1100,24 @@ void SetPushOthers(bool on) {
 
 void SetKeyRange(int value) {
   const int clamped = value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value);
-  if (g_keyRange == clamped) {
+  if (g_keyRange == clamped && !g_keyRangeLocal) {
     return;
   }
   g_keyRange = clamped;
+  g_keyRangeLocal = false;  // the slider is the app-wide control, always
   SaveSettings();
   ShareSettings();
   if (!g_keyColours.empty()) {
     RunColourKey();  // this window re-filters with the new margin straight away
   }
+}
+
+// The same value, but this window only: no file, no other copy. No re-filter either: both callers
+// open a page right after, and the filter is applied again when that page finishes loading.
+void UseStateKeyRange(int value) {
+  const int clamped = value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value);
+  g_keyRange = clamped;
+  g_keyRangeLocal = true;
 }
 
 bool g_ctrlDown = false;
@@ -2342,8 +2359,8 @@ bool EnsureAssociation() {
   return true;
 }
 
-// Everything the file holds, in the order the window can take it: the margin first (an app-wide
-// option, exactly what the slider sets), then the page, then the rectangle -- opening a page may
+// Everything the file holds, in the order the window can take it: the margin first (this window only,
+// which is what the file was saved with), then the page, then the rectangle -- opening a page may
 // resize the window on its own -- and the zoom last, because the fit applies it once the page
 // finishes opening.
 void ApplyState(const TinyState& state) {
@@ -2351,7 +2368,7 @@ void ApplyState(const TinyState& state) {
     return;
   }
   if (state.keyRange >= 0) {
-    SetKeyRange(state.keyRange);
+    UseStateKeyRange(state.keyRange);
   }
   g_keyColours = state.keyColours;
   SetEngineBackground(!g_keyColours.empty());
@@ -3068,9 +3085,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       }
       g_stateZoom = state.zoom;
       g_keyColours = state.keyColours;
-      if (state.keyRange >= 0 && state.keyRange != g_keyRange) {
-        g_keyRange = state.keyRange;
-        SaveSettings();  // the margin is app-wide, exactly like the slider
+      if (state.keyRange >= 0) {
+        UseStateKeyRange(state.keyRange);  // the snapshot's margin, not the app's
       }
       RememberStateFolder(statePath);
     } else {
