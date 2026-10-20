@@ -67,11 +67,12 @@ se copia a cualquier PC con Windows y anda.
   (*tiny object*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
   el tamaño, el zoom, y el color que hayas transparentado con su rango.
 - Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
-  ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno; si
-  movés el exe, guardá otro para que vuelva a apuntar ahí. Si otro programa ya era dueño de `.to`, no
-  se le toca: en ese caso el archivo se abre arrastrándolo sobre `tinybrowser.exe`.
-- `Ctrl+Alt+G` en la pantalla de inicio es la otra mitad: carga el último `.to`. Si todavía no hay
-  ninguno guardado, pregunta cuál.
+  ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno y se
+  reafirma en cada arranque, así que mover el exe no la rompe. Si otro programa ya era dueño de `.to`,
+  no se le toca: en ese caso el archivo se abre arrastrándolo sobre `tinybrowser.exe`.
+- `Ctrl+Alt+G` en la pantalla de inicio es la otra mitad: abre el selector de Windows para elegir
+  cuál de los `.to` cargar. Durante esa ejecución el selector vuelve a abrirse en la última carpeta
+  usada; nada de esto se guarda en el archivo de opciones.
 - El archivo es texto (`[tiny]` y una línea por dato): se puede abrir con el Notepad y cambiar la
   dirección a mano.
 - Dos cosas que conviene saber: el zoom guardado manda mientras esa página esté abierta (aunque

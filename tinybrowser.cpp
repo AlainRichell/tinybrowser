@@ -2005,7 +2005,6 @@ void FitAndPlace() {
 constexpr wchar_t kStateSection[] = L"tiny";
 constexpr wchar_t kStateFileExtension[] = L".to";
 constexpr wchar_t kStateProgId[] = L"tinybrowser.to";
-constexpr wchar_t kStateLastSection[] = L"state";  // where the last one came from
 
 struct TinyState {
   std::wstring url;
@@ -2114,24 +2113,15 @@ bool WriteState(const std::wstring& path, const TinyState& state) {
   return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
-void RememberState(const std::wstring& path) {
-  wchar_t settings[MAX_PATH] = {};
-  SettingsPath(settings);
-  if (settings[0]) {
-    WritePrivateProfileStringW(kStateLastSection, L"Last", path.c_str(), settings);
-  }
-}
+// The folder the last .to came from, kept for this run only: which file is in use is the file's
+// own business, and the options file is not the place to remember it.
+std::wstring g_stateFolder;
 
-// False when nothing is remembered or the file is gone: then there is nothing to bring back.
-bool LastStatePath(wchar_t* path, int size) {
-  wchar_t settings[MAX_PATH] = {};
-  SettingsPath(settings);
-  path[0] = 0;
-  if (!settings[0]) {
-    return false;
+void RememberStateFolder(const std::wstring& path) {
+  const size_t slash = path.find_last_of(static_cast<wchar_t>(92));
+  if (slash != std::wstring::npos) {
+    g_stateFolder = path.substr(0, slash);
   }
-  GetPrivateProfileStringW(kStateLastSection, L"Last", L"", path, size, settings);
-  return path[0] != 0 && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
 // The suggested name is the site's own, so a folder of them reads as the sites it holds.
@@ -2157,17 +2147,6 @@ std::wstring NameFromUrl(const std::wstring& url) {
   }
   name += kStateFileExtension;
   return name;
-}
-
-// The folder of the last .to is where the next one goes, so a set of them stays together.
-std::wstring StateFolder() {
-  wchar_t last[MAX_PATH * 2] = {};
-  if (!LastStatePath(last, ARRAYSIZE(last))) {
-    return std::wstring();
-  }
-  const std::wstring previous(last);
-  const size_t slash = previous.find_last_of(static_cast<wchar_t>(92));
-  return slash == std::wstring::npos ? std::wstring() : previous.substr(0, slash);
 }
 
 bool AskStateToSave(wchar_t* path, DWORD size, const std::wstring& suggested,
@@ -2305,20 +2284,20 @@ void SaveState() {
     }
   }
   wchar_t path[MAX_PATH * 2] = {};
-  if (!AskStateToSave(path, ARRAYSIZE(path), NameFromUrl(g_url), StateFolder())) {
+  if (!AskStateToSave(path, ARRAYSIZE(path), NameFromUrl(g_url), g_stateFolder)) {
     return;
   }
   if (!IsStatePath(path)) {
     StringCchCatW(path, ARRAYSIZE(path), kStateFileExtension);
   }
   if (WriteState(path, state)) {
-    RememberState(path);
+    RememberStateFolder(path);
     EnsureAssociation();  // a file nothing can open is half a feature
   }
 }
 
 // One chord, two meanings: a page can be photographed, the bar has nothing to photograph, so there
-// it brings the last one back -- the same file Explorer opens by double click.
+// it asks which file to bring back -- the same files Explorer opens by double click.
 void StateChord() {
   if (!g_window) {
     return;
@@ -2327,20 +2306,14 @@ void StateChord() {
     SaveState();
     return;
   }
-  TinyState state;
-  wchar_t last[MAX_PATH * 2] = {};
-  if (LastStatePath(last, ARRAYSIZE(last)) && ReadState(last, &state)) {
-    ApplyState(state);
-    return;
-  }
-  const std::wstring folder = StateFolder();
   wchar_t picked[MAX_PATH * 2] = {};
-  if (!AskStateToOpen(picked, ARRAYSIZE(picked), folder)) {
+  if (!AskStateToOpen(picked, ARRAYSIZE(picked), g_stateFolder)) {
     return;
   }
+  TinyState state;
   if (ReadState(picked, &state)) {
     ApplyState(state);
-    RememberState(picked);
+    RememberStateFolder(picked);
   }
 }
 
@@ -2957,12 +2930,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LoadSettings();
-  // A machine that already uses .to files gets the association pointed back at this exe when it
-  // was moved; one that never saved one keeps its registry untouched.
-  wchar_t rememberedState[MAX_PATH * 2] = {};
-  if (LastStatePath(rememberedState, ARRAYSIZE(rememberedState))) {
-    EnsureAssociation();
-  }
+  // The association records the path of the exe that wrote it, so it is restated on every start:
+  // after moving the exe, double-clicking one of those files still opens this build.
+  EnsureAssociation();
   const std::wstring arguments = Trim(commandLine ? commandLine : L"");
   if (arguments.compare(0, 8, L"--place ") == 0) {
     // A duplicate asks for its own rectangle so the copy does not land on top of the original.
@@ -3002,7 +2972,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         g_keyRange = state.keyRange;
         SaveSettings();  // the margin is app-wide, exactly like the slider
       }
-      RememberState(statePath);
+      RememberStateFolder(statePath);
     } else {
       g_startTarget.clear();  // unreadable: the bar, not a search for a path
     }
