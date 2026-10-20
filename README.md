@@ -24,10 +24,14 @@ se copia a cualquier PC con Windows y anda.
   en otra ventana y `Ctrl+Alt+X` cierra.
 - `Ctrl+Alt+A` arma el gotero: el puntero se vuelve una pipeta y el clic en cualquier parte de la
   pantalla toma ese color. La punta de la pipeta es exactamente el píxel que se lee, y el bulbo
-  muestra en vivo el color que va a desaparecer. En **esa** ventana (y en ninguna otra) ese color
-  pasa a ser transparente: se ve lo que haya detrás. Mientras dura, las barras de scroll (vertical y
-  horizontal) se ocultan: una barra dibujada quedaría encima del agujero. `Escape` o el botón derecho
-  cancelan sin elegir, y `Ctrl+Alt+A` otra vez devuelve la ventana a la normalidad, con sus barras.
+  muestra en vivo el color que va a desaparecer. El gotero sigue armado después de cada clic, así que
+  podés tomar **varios colores seguidos** y todos se vuelven transparentes a la vez en **esa**
+  ventana (y en ninguna otra): se ve lo que haya detrás. Volver a tomar un color que ya está
+  transparente lo devuelve a la vista sin tocar los demás, y entran hasta 12. Mientras dura, las
+  barras de scroll (vertical y horizontal) se ocultan: una barra dibujada quedaría encima del
+  agujero. `Escape` o el botón derecho salen del gotero y dejan todo lo elegido como está;
+  `Ctrl+Alt+A` en ese momento también sale, y otra vez `Ctrl+Alt+A` devuelve la ventana a la
+  normalidad, con sus barras.
 - `Ctrl+Alt+C` las oculta a todas: cada copia abierta sale de la pantalla y de la barra de tareas,
   y el mismo `Ctrl+Alt+C` las vuelve a mostrar todas juntas. Es la única forma de ocultarlas y de
   traerlas de vuelta; al volver, la que retoma el teclado es la que estaba en uso.
@@ -65,7 +69,7 @@ se copia a cualquier PC con Windows y anda.
 
 - `Ctrl+Alt+G` con una página abierta abre el diálogo de guardar y escribe un archivo **`.to`**
   (*tiny object*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
-  el tamaño, el zoom, y el color que hayas transparentado con su rango.
+  el tamaño, el zoom, y los colores que hayas transparentado con su rango.
 - Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
   ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno y se
   reafirma en cada arranque, así que mover el exe no la rompe. Si otro programa ya era dueño de `.to`,
@@ -74,7 +78,8 @@ se copia a cualquier PC con Windows y anda.
   cuál de los `.to` cargar. Durante esa ejecución el selector vuelve a abrirse en la última carpeta
   usada; nada de esto se guarda en el archivo de opciones.
 - El archivo es texto (`[tiny]` y una línea por dato): se puede abrir con el Notepad y cambiar la
-  dirección a mano.
+  dirección a mano. Los colores transparentados van en una sola línea (`KeyColours`), separados por
+  comas.
 - Dos cosas que conviene saber: el zoom guardado manda mientras esa página esté abierta (aunque
   redimensiones la ventana; el ajuste automático vuelve al abrir otra dirección en la barra), y el
   rango del color es una opción compartida, así que cargar un `.to` con otro rango lo cambia en
@@ -86,10 +91,13 @@ La ventana no dibuja nada por su cuenta: el motor pinta en un árbol de DirectCo
 composición) y la ventana no tiene superficie GDI, así que lo que se ve es exactamente esa
 composición, con su canal alfa. Por eso el color elegido puede volverse un agujero de verdad.
 
-El filtro va sobre la página entera, no sobre un elemento: el color elegido se vuelve transparente
+El filtro va sobre la página entera, no sobre un elemento: cada color elegido se vuelve transparente
 allí donde aparezca, sea el fondo de un div, los píxeles de un GIF o el texto. Es un filtro SVG que
-calcula píxel por píxel la distancia al color y la convierte en transparencia, y no necesita leer
-píxeles, así que alcanza igual a GIF animados, videos, canvas e imágenes de otro origen.
+calcula píxel por píxel la distancia a cada color y la convierte en transparencia, y no necesita leer
+píxeles, así que alcanza igual a GIF animados, videos, canvas e imágenes de otro origen. Cada color
+aporta su propia máscara y las máscaras se multiplican entre sí: un píxel desaparece si coincide con
+cualquiera de ellas, y por eso varios colores se pueden tener transparentes al mismo tiempo sin que
+uno tape al otro.
 
 Y como la base de la página también deja de pintar, el agujero no se queda en el fondo de la página:
 lo que se ve a través es el escritorio. Dicho al revés: si había algo debajo de ese color, también

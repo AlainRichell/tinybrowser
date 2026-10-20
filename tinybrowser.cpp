@@ -18,6 +18,7 @@
 #include <shellapi.h>
 #include <windowsx.h>
 #include <strsafe.h>
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cwchar>
@@ -90,8 +91,12 @@ constexpr wchar_t kBootstrapperName[] = L"MicrosoftEdgeWebview2Setup.exe";
 
 HWND g_window = nullptr;
 bool g_picking = false;       // eyedropper armed, waiting for the click
-bool g_keyed = false;         // a colour of this page is being made transparent
-COLORREF g_keyColour = 0;     // ... the one that was picked
+// The colours this window is keying, in the order they were picked. An empty list is the plain
+// window; picking a colour that is already here takes it out, so one can go without clearing the rest.
+std::vector<COLORREF> g_keyColours;
+// Each colour costs a handful of filter primitives and the script travels to the page as one string:
+// past this many the filter stops being cheap, and a page never needs more.
+constexpr size_t kKeyColourMax = 12;
 HCURSOR g_pickCursor = nullptr;
 COLORREF g_pickPreview = CLR_INVALID;  // colour shown in the pipette's bulb
 POINT g_pickAt = {};          // where the eyedropper was clicked
@@ -644,88 +649,144 @@ void SetEngineBackground(bool transparent) {
   }
 }
 
-// Everything of the picked colour stops painting, and so does the page's own base: with composition
-// hosting those pixels come out with alpha 0 and the desktop is what shows there. Flat backgrounds
+// A picked colour stops painting, and so does the page's own base: with composition hosting those
+// pixels come out with alpha 0 and the desktop is what shows there. The key is one SVG filter with a
+// mask per picked colour, multiplied together -- a pixel disappears when it matches ANY of them,
+// which is exactly what multiplying gives (a 0 anywhere makes the whole product 0). Flat backgrounds
 // are exact; a photo or a canvas of that colour is not reachable from CSS and stays as it is.
-const wchar_t kColourKeyScript[] =
-    L"(function(){"
-    L"if(window.__tinyKeyRestore){window.__tinyKeyRestore();}"
-    L"var cr=%d, cg=%d, cb=%d, rr=%d;"
-    // The margin, in levels per channel, becomes the threshold of the mask: a pixel whose distance
-    // to the picked colour adds up to less than this disappears along with it.
-    L"var thr=rr*3/255;"
-    // feFuncA is alpha = slope*alpha + intercept, so the threshold has to come back multiplied by
-    // the slope: alpha reaches 0 exactly at the picked margin and is 1 a few levels past it.
-    L"var cutoff=-25*thr;"
-    // The key is an SVG filter that turns the picked colour into alpha: absolute difference per
-    // channel (each transfer keeps the positive side of one subtraction), summed, thresholded and
-    // then used as the mask of the original colours. It reads no pixels, so it reaches animated GIFs,
-    // videos, canvas and images from another origin alike.
-    L"var svg=\"<svg xmlns='http://www.w3.org/2000/svg'><filter id='k' "
-    L"color-interpolation-filters='sRGB'>\""
-    L"+\"<feComponentTransfer in='SourceGraphic' result='hi'>\""
-    L"+\"<feFuncR type='linear' slope='1' intercept='\"+(-cr/255)+\"'/>\""
-    L"+\"<feFuncG type='linear' slope='1' intercept='\"+(-cg/255)+\"'/>\""
-    L"+\"<feFuncB type='linear' slope='1' intercept='\"+(-cb/255)+\"'/></feComponentTransfer>\""
-    L"+\"<feComponentTransfer in='SourceGraphic' result='lo'>\""
-    L"+\"<feFuncR type='linear' slope='-1' intercept='\"+(cr/255)+\"'/>\""
-    L"+\"<feFuncG type='linear' slope='-1' intercept='\"+(cg/255)+\"'/>\""
-    L"+\"<feFuncB type='linear' slope='-1' intercept='\"+(cb/255)+\"'/></feComponentTransfer>\""
-    L"+\"<feBlend in='hi' in2='lo' mode='screen' result='diff'/>\""
-    L"+\"<feColorMatrix in='diff' type='matrix' "
-    L"values='1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  1 1 1 0 0' result='sum'/>\""
-    L"+\"<feComponentTransfer in='sum' result='mask'>"
-    L"<feFuncA type='linear' slope='25' intercept='\"+cutoff+\"'/></feComponentTransfer>\""
-    L"+\"<feComposite in='SourceGraphic' in2='mask' operator='in'/></filter></svg>\";"
-    // As a data URL: a filter living in a page element is not resolved when this script is injected
-    // from the host, and the page then renders as if it had no filter at all.
-    L"var keyUrl='url(\"data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)+'#k\")';"
-    // On the root, so the hole goes all the way down: every pixel of that colour anywhere in the page
-    // disappears, whatever element it belonged to, and the page's own base goes too, so what shows
-    // through is the desktop and not the backdrop of whatever sat behind the picture.
-    // On the body, not on <html>: filtering the root brings the viewport's scrollbars back, because
-    // they are painted outside the filtered subtree.
-    L"var rootEl=document.body;"
-    L"var previousFilter=rootEl?rootEl.style.filter:'';"
-    L"if(rootEl){rootEl.style.setProperty('filter',keyUrl,'important');}"
-    L"var style=document.createElement('style');style.id='__tiny_key_style';"
-    L"style.textContent='html,body{background-color:transparent !important;"
-    L"background-image:none !important;scrollbar-width:none !important}"
-    L"::-webkit-scrollbar{display:none !important;width:0 !important;height:0 !important}';"
-    L"document.documentElement.appendChild(style);"
-    L"window.__tinyKeyRestore=function(){style.remove();"
-    L"if(rootEl){rootEl.style.filter=previousFilter;}"
-    L"window.__tinyKeyRestore=null;};"
-    L"})()";
-
-void RunColourKey() {
-  if (!g_webview || !g_keyed) {
-    return;
+std::wstring BuildColourKeyScript() {
+  std::wstring svg =
+      L"<svg xmlns='http://www.w3.org/2000/svg'><filter id='k' color-interpolation-filters='sRGB'>";
+  // The margin, in levels per channel, becomes the threshold of every mask: a pixel whose distance
+  // to the picked colour adds up to less than this disappears along with it.
+  const double threshold = g_keyRange * 3.0 / 255.0;
+  // feFuncA is alpha = slope*alpha + intercept, so the threshold has to come back multiplied by the
+  // slope: alpha reaches 0 exactly at the picked margin and is 1 a few levels past it.
+  const double cutoff = -25.0 * threshold;
+  wchar_t part[1024] = {};
+  for (size_t i = 0; i < g_keyColours.size(); ++i) {
+    const unsigned index = (unsigned)i;
+    const double r = GetRValue(g_keyColours[i]) / 255.0;
+    const double g = GetGValue(g_keyColours[i]) / 255.0;
+    const double b = GetBValue(g_keyColours[i]) / 255.0;
+    // Absolute difference per channel: one transfer keeps the positive side of source minus colour,
+    // the other the positive side of colour minus source, and the screen blend adds the halves.
+    // It reads no pixels, so it reaches animated GIFs, videos, canvas and images from another origin.
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feComponentTransfer in='SourceGraphic' result='hi%u'>"
+                     L"<feFuncR type='linear' slope='1' intercept='%.6f'/>"
+                     L"<feFuncG type='linear' slope='1' intercept='%.6f'/>"
+                     L"<feFuncB type='linear' slope='1' intercept='%.6f'/>"
+                     L"</feComponentTransfer>",
+                     index, -r, -g, -b);
+    svg += part;
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feComponentTransfer in='SourceGraphic' result='lo%u'>"
+                     L"<feFuncR type='linear' slope='-1' intercept='%.6f'/>"
+                     L"<feFuncG type='linear' slope='-1' intercept='%.6f'/>"
+                     L"<feFuncB type='linear' slope='-1' intercept='%.6f'/>"
+                     L"</feComponentTransfer>",
+                     index, r, g, b);
+    svg += part;
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feBlend in='hi%u' in2='lo%u' mode='screen' result='diff%u'/>", index, index,
+                     index);
+    svg += part;
+    // The three channels added into the alpha of one value: the distance of that pixel to this
+    // colour, on its own, before the threshold.
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feColorMatrix in='diff%u' type='matrix' "
+                     L"values='1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  1 1 1 0 0' result='sum%u'/>",
+                     index, index);
+    svg += part;
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feComponentTransfer in='sum%u' result='mask%u'>"
+                     L"<feFuncA type='linear' slope='25' intercept='%.6f'/></feComponentTransfer>",
+                     index, index, cutoff);
+    svg += part;
   }
-  // Not wsprintfW: it stops at 1024 characters and this script is longer than that.
-  wchar_t script[8192] = {};
-  StringCchPrintfW(script, ARRAYSIZE(script), kColourKeyScript, GetRValue(g_keyColour),
-                   GetGValue(g_keyColour), GetBValue(g_keyColour), g_keyRange);
-  g_webview->ExecuteScript(script, nullptr);
+  // One mask per colour, chained through feComposite's product term: alpha comes out as the product
+  // of the two masks and its colour does not matter, because the last step takes the page's own
+  // colours and only this alpha.
+  std::wstring mask = L"mask0";
+  for (size_t i = 1; i < g_keyColours.size(); ++i) {
+    wchar_t next[16] = {};
+    StringCchPrintfW(next, ARRAYSIZE(next), L"acc%u", (unsigned)i);
+    StringCchPrintfW(part, ARRAYSIZE(part),
+                     L"<feComposite in='%s' in2='mask%u' operator='arithmetic' "
+                     L"k1='1' k2='0' k3='0' k4='0' result='%s'/>",
+                     mask.c_str(), (unsigned)i, next);
+    svg += part;
+    mask = next;
+  }
+  StringCchPrintfW(part, ARRAYSIZE(part),
+                   L"<feComposite in='SourceGraphic' in2='%s' operator='in'/></filter></svg>",
+                   mask.c_str());
+  svg += part;
+
+  // The filter travels inside a data URL: a filter living in a page element is not resolved when
+  // this script is injected from the host, and the page then renders as if it had no filter at all.
+  // The SVG goes in as a double quoted JS string, so nothing in it may use double quotes.
+  std::wstring script =
+      L"(function(){"
+      L"if(window.__tinyKeyRestore){window.__tinyKeyRestore();}"
+      L"var svg=\"";
+  script += svg;
+  script +=
+      L"\";"
+      L"var keyUrl='url(\"data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)+'#k\")';"
+      // On the root, so the hole goes all the way down: every pixel of those colours anywhere in the
+      // page disappears, whatever element it belonged to, and the page's own base goes too, so what
+      // shows through is the desktop and not the backdrop of whatever sat behind the picture.
+      // On the body, not on <html>: filtering the root brings the viewport's scrollbars back, because
+      // they are painted outside the filtered subtree.
+      L"var rootEl=document.body;"
+      L"var previousFilter=rootEl?rootEl.style.filter:'';"
+      L"if(rootEl){rootEl.style.setProperty('filter',keyUrl,'important');}"
+      L"var style=document.createElement('style');style.id='__tiny_key_style';"
+      L"style.textContent='html,body{background-color:transparent !important;"
+      L"background-image:none !important;scrollbar-width:none !important}"
+      L"::-webkit-scrollbar{display:none !important;width:0 !important;height:0 !important}';"
+      L"document.documentElement.appendChild(style);"
+      L"window.__tinyKeyRestore=function(){style.remove();"
+      L"if(rootEl){rootEl.style.filter=previousFilter;}"
+      L"window.__tinyKeyRestore=null;};"
+      L"})()";
+  return script;
 }
 
-void ApplyColourKey(COLORREF colour) {
-  g_keyed = true;
-  g_keyColour = colour;
-  SetEngineBackground(true);
-  RunColourKey();
+void RunColourKey() {
+  if (!g_webview || g_keyColours.empty()) {
+    return;
+  }
+  const std::wstring script = BuildColourKeyScript();
+  g_webview->ExecuteScript(script.c_str(), nullptr);
 }
 
 void ClearColourKey() {
-  if (!g_keyed) {
-    return;
-  }
-  g_keyed = false;
+  g_keyColours.clear();
   if (g_webview) {
     g_webview->ExecuteScript(
         L"if (window.__tinyKeyRestore) { window.__tinyKeyRestore(); }", nullptr);
   }
   SetEngineBackground(false);
+}
+
+// A second pickup adds to the key instead of replacing it, and picking a colour that is already
+// keyed takes it out: that is the only way to drop one without clearing the others.
+void ApplyColourKey(COLORREF colour) {
+  const auto known = std::find(g_keyColours.begin(), g_keyColours.end(), colour);
+  if (known != g_keyColours.end()) {
+    g_keyColours.erase(known);
+  } else if (g_keyColours.size() < kKeyColourMax) {
+    g_keyColours.push_back(colour);
+  }
+  if (g_keyColours.empty()) {
+    ClearColourKey();
+    return;
+  }
+  SetEngineBackground(true);
+  RunColourKey();
 }
 
 void StopPicking() {
@@ -738,7 +799,7 @@ void StopPicking() {
   SetCursor(LoadCursorW(nullptr, IDC_ARROW));
 }
 
-// Ctrl+Alt+A: armed -> cancel, applied -> remove, otherwise arm the eyedropper.
+// Ctrl+Alt+A: armed -> stop picking, keying -> clear every colour, otherwise arm the eyedropper.
 void TogglePicking() {
   if (!g_window) {
     return;
@@ -747,7 +808,7 @@ void TogglePicking() {
     StopPicking();
     return;
   }
-  if (g_keyed) {
+  if (!g_keyColours.empty()) {
     ClearColourKey();
     return;
   }
@@ -837,7 +898,7 @@ void HandleHotkey(UINT id, LPARAM data) {
     ShowInstance(data != 0);
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
-    if (g_keyed) {
+    if (!g_keyColours.empty()) {
       RunColourKey();
     }
   } else if (id == kHotkeyPick) {
@@ -848,9 +909,13 @@ void HandleHotkey(UINT id, LPARAM data) {
     ShowCursor(FALSE);
     const COLORREF picked = ScreenPixel(g_pickAt);
     ShowCursor(TRUE);
-    StopPicking();
     if (picked != CLR_INVALID) {
       ApplyColourKey(picked);
+    }
+    // Still armed, and still holding the capture: the next click takes another colour. Leaving is
+    // Escape or the right button, and it keeps everything picked so far.
+    if (g_picking && g_pickCursor) {
+      SetCursor(g_pickCursor);
     }
   } else if (id == kCommandPickCancel) {
     StopPicking();
@@ -1033,7 +1098,7 @@ void SetKeyRange(int value) {
   g_keyRange = clamped;
   SaveSettings();
   ShareSettings();
-  if (g_keyed) {
+  if (!g_keyColours.empty()) {
     RunColourKey();  // this window re-filters with the new margin straight away
   }
 }
@@ -1999,7 +2064,7 @@ void FitAndPlace() {
 }
 
 // A .to file ("tiny object") is one window frozen in a file: the page it shows, the rectangle it
-// occupies, the zoom it is drawn at and the colour it made transparent. Plain key=value text,
+// occupies, the zoom it is drawn at and the colours it made transparent. Plain key=value text,
 // written with the same profile calls as the options file, so there is no parser here and it can be
 // read in Notepad.
 constexpr wchar_t kStateSection[] = L"tiny";
@@ -2010,8 +2075,7 @@ struct TinyState {
   std::wstring url;
   RECT rect = {};
   bool hasRect = false;
-  bool keyed = false;
-  COLORREF keyColour = 0;
+  std::vector<COLORREF> keyColours;
   int keyRange = -1;  // -1: the file carries none, so the option stays as it is
   int zoom = 0;       // thousandths of the factor, 0 when none was saved
 };
@@ -2047,6 +2111,24 @@ RECT KeepOnDesktop(const RECT& wanted) {
   return clamped;
 }
 
+// KeyColours is a comma separated list of the same decimal numbers KeyColour has always carried.
+void ParseColourList(const wchar_t* text, std::vector<COLORREF>* colours) {
+  colours->clear();
+  const wchar_t* at = text;
+  while (*at && colours->size() < kKeyColourMax) {
+    wchar_t* end = nullptr;
+    const unsigned long value = std::wcstoul(at, &end, 10);
+    if (end == at) {
+      break;  // nothing that looks like a number: the rest of the line is not ours
+    }
+    colours->push_back((COLORREF)value);
+    at = end;
+    while (*at == L',' || *at == L' ') {
+      ++at;
+    }
+  }
+}
+
 bool ReadState(const std::wstring& path, TinyState* state) {
   if (!state || path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     return false;
@@ -2067,8 +2149,16 @@ bool ReadState(const std::wstring& path, TinyState* state) {
     state->rect.right = left + width;
     state->rect.bottom = top + height;
   }
-  state->keyed = GetPrivateProfileIntW(kStateSection, L"Keyed", 0, path.c_str()) != 0;
-  state->keyColour = (COLORREF)GetPrivateProfileIntW(kStateSection, L"KeyColour", 0, path.c_str());
+  wchar_t colours[512] = {};
+  GetPrivateProfileStringW(kStateSection, L"KeyColours", L"", colours, ARRAYSIZE(colours),
+                           path.c_str());
+  ParseColourList(colours, &state->keyColours);
+  if (state->keyColours.empty() &&
+      GetPrivateProfileIntW(kStateSection, L"Keyed", 0, path.c_str()) != 0) {
+    // Saved before the list existed: one colour, and nothing else.
+    state->keyColours.push_back(
+        (COLORREF)GetPrivateProfileIntW(kStateSection, L"KeyColour", 0, path.c_str()));
+  }
   const int range =
       (int)GetPrivateProfileIntW(kStateSection, L"KeyRange", kKeyRangeMax + 1, path.c_str());
   state->keyRange = range <= kKeyRangeMax ? range : -1;
@@ -2104,10 +2194,23 @@ bool WriteState(const std::wstring& path, const TinyState& state) {
     wsprintfW(value, L"%d", state.zoom);
     WritePrivateProfileStringW(kStateSection, L"Zoom", value, path.c_str());
   }
-  wsprintfW(value, L"%d", state.keyed ? 1 : 0);
+  wsprintfW(value, L"%d", state.keyColours.empty() ? 0 : 1);
   WritePrivateProfileStringW(kStateSection, L"Keyed", value, path.c_str());
-  wsprintfW(value, L"%u", (unsigned)state.keyColour);
-  WritePrivateProfileStringW(kStateSection, L"KeyColour", value, path.c_str());
+  if (!state.keyColours.empty()) {
+    std::wstring list;
+    for (COLORREF colour : state.keyColours) {
+      if (!list.empty()) {
+        list += L',';
+      }
+      wchar_t number[16] = {};
+      wsprintfW(number, L"%u", (unsigned)colour);
+      list += number;
+    }
+    WritePrivateProfileStringW(kStateSection, L"KeyColours", list.c_str(), path.c_str());
+    // The first one again under the old name: an older build still opens the file keying something.
+    wsprintfW(value, L"%u", (unsigned)state.keyColours.front());
+    WritePrivateProfileStringW(kStateSection, L"KeyColour", value, path.c_str());
+  }
   wsprintfW(value, L"%d", state.keyRange);
   WritePrivateProfileStringW(kStateSection, L"KeyRange", value, path.c_str());
   return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
@@ -2250,9 +2353,8 @@ void ApplyState(const TinyState& state) {
   if (state.keyRange >= 0) {
     SetKeyRange(state.keyRange);
   }
-  g_keyed = state.keyed;
-  g_keyColour = state.keyColour;
-  SetEngineBackground(g_keyed);
+  g_keyColours = state.keyColours;
+  SetEngineBackground(!g_keyColours.empty());
   Navigate(state.url);
   g_stateZoom = state.zoom;  // after Navigate, which clears it: this page keeps the zoom it had
   if (state.hasRect) {
@@ -2274,8 +2376,7 @@ void SaveState() {
     state.rect = rect;
     state.hasRect = true;
   }
-  state.keyed = g_keyed;
-  state.keyColour = g_keyColour;
+  state.keyColours = g_keyColours;
   state.keyRange = g_keyRange;
   if (g_controller) {
     double zoom = 1.0;
@@ -2675,7 +2776,7 @@ void CreateWebView() {
                       // default that is white: growing the window showed a pale strip on the freshly
                       // exposed edge. Same colour as the window, so a resize looks even, and
                       // transparent when a .to brought a colour already keyed in.
-                      SetEngineBackground(g_keyed);
+                      SetEngineBackground(!g_keyColours.empty());
                       // The engine has to be told, because the window's own focus notice arrives
                       // before the controller exists: without this the address field is drawn
                       // focused but the keystrokes go nowhere until you click the window.
@@ -2966,8 +3067,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         g_hasPlacedRect = true;
       }
       g_stateZoom = state.zoom;
-      g_keyed = state.keyed;
-      g_keyColour = state.keyColour;
+      g_keyColours = state.keyColours;
       if (state.keyRange >= 0 && state.keyRange != g_keyRange) {
         g_keyRange = state.keyRange;
         SaveSettings();  // the margin is app-wide, exactly like the slider
