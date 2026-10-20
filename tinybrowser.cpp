@@ -2682,23 +2682,43 @@ void ReportFailure(const wchar_t* what, HRESULT result) {
   MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONERROR);
 }
 
+// The device first, and one message only if both drivers fail: a hardware attempt that falls back to
+// software is not an error worth interrupting anyone for, and the pair of codes is what says why.
+// E_OUTOFMEMORY is the answer of a machine that already holds dozens of copies of this engine: the
+// driver has no room for one more device, and no retry makes room for it.
+bool CreateD3DDevice(ComPtr<ID3D11Device>* device) {
+  const D3D_DRIVER_TYPE drivers[] = {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
+  HRESULT results[2] = {};
+  for (int i = 0; i < 2; ++i) {
+    ComPtr<ID3D11Device> attempt;
+    results[i] = D3D11CreateDevice(nullptr, drivers[i], nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                   nullptr, 0, D3D11_SDK_VERSION, &attempt, nullptr, nullptr);
+    if (SUCCEEDED(results[i]) && attempt) {
+      *device = attempt;
+      return true;
+    }
+  }
+  wchar_t text[512] = {};
+  wsprintfW(text,
+            L"tinybrowser no pudo iniciar el motor de WebView2.\n\n"
+            L"Crear el dispositivo grafico fallo con la placa (0x%08X) y por software (0x%08X).\n\n%s",
+            (unsigned)results[0], (unsigned)results[1],
+            results[0] == E_OUTOFMEMORY || results[1] == E_OUTOFMEMORY
+                ? L"La maquina se quedo sin memoria para el motor grafico: cierra algunas ventanas de "
+                  L"tinybrowser y vuelve a intentar."
+                : L"");
+  MessageBoxW(nullptr, text, kTitle, MB_OK | MB_ICONERROR);
+  return false;
+}
+
 // Builds the tree the engine paints into. Every step reports its own failing call: a silent
 // failure here is a window that shows nothing at all, which is impossible to diagnose from outside.
 bool StartComposition() {
   ComPtr<ID3D11Device> d3dDevice;
-  HRESULT result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                     D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
-                                     D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
-  if (FAILED(result) || !d3dDevice) {
-    ReportFailure(L"D3D11CreateDevice (hardware)", result);
-    result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
-                               &d3dDevice, nullptr, nullptr);
-    if (FAILED(result) || !d3dDevice) {
-      ReportFailure(L"D3D11CreateDevice (WARP)", result);
-      return false;
-    }
+  if (!CreateD3DDevice(&d3dDevice)) {
+    return false;
   }
+  HRESULT result = S_OK;
   ComPtr<IDXGIDevice> dxgiDevice;
   result = d3dDevice.As(&dxgiDevice);
   if (FAILED(result) || !dxgiDevice) {
