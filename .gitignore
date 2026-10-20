@@ -9,3 +9,7 @@ sdk/
 
 # Objetos de tiny (.to): el estado de una ventana, con rutas de esta máquina
 *.to
+
+# Salidas del generador del icono de los .to: se recrean con python tools/make_file_icon.py
+tools/file-icons/
+__pycache__/

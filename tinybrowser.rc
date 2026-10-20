@@ -1,3 +1,6 @@
 // Icons and other executable resources. The lowest icon id becomes the .exe icon that
-// Explorer and the taskbar show; the app also loads it for its window.
+// Explorer and the taskbar show; the app also loads it for its window. Id 2 is the file icon: the
+// document sheet with the donut in the corner, which the .to association points at so a snapshot
+// never looks like the browser itself.
 1 ICON "tinybrowser.ico"
+2 ICON "tiny-file.ico"

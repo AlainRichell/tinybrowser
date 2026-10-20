@@ -2679,8 +2679,10 @@ bool EnsureAssociation() {
   const std::wstring classes = L"Software\\Classes\\";
   SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, L"tiny object");
+  // Resource id 2, the document icon: a .to has to look like a file, not like the browser that
+  // opens it.
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon",
-                L"\"" + executable + L"\",0");
+                L"\"" + executable + L"\",-2");
   SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command",
                 L"\"" + executable + L"\" \"%1\"");
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);

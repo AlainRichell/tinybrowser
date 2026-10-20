@@ -92,6 +92,10 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
 - `Ctrl+Alt+G` con una página abierta abre el diálogo de guardar y escribe un archivo **`.to`**
   (*tiny object*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
   el tamaño, el zoom, y los colores que hayas transparentado con su rango.
+- Los `.to` tienen su propio icono en el Explorador: una hoja de papel con el donut de tiny grande en
+  la esquina, distinta del icono del navegador. Lo pone el exe como segundo icono (`id 2`) y la
+  asociación apunta ahí, así que el archivo no se confunde con el programa que lo abre. Las variantes
+  y el generador quedan en `tools/make_file_icon.py` y `tools/file-icons/`.
 - Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
   ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno y se
   reafirma en cada arranque, así que mover el exe no la rompe. Si otro programa ya era dueño de `.to`,
