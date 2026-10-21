@@ -1,12 +1,12 @@
 # tinybrowser
 
-<img src="tools/icono.png" width="110" align="right" alt="El icono de tinybrowser: una dona pixel-art">
+<img src="tools/icono.png" width="110" align="right" alt="El icono de tinybrowser: una dona metálica segmentada">
 
 Un navegador de escritorio de **160x90 píxeles**: una ventana sin marco, siempre encima, para
 tener un sitio a la vista mientras trabajás en otra cosa. No es un visor de una URL fija — le
 escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge embebido.
 
-**221.184 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
+**598.016 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
 ## Usar
@@ -109,8 +109,8 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
   el tamaño, el zoom, y los colores que hayas transparentado con su rango.
 - Los `.to` tienen su propio icono en el Explorador: una hoja de papel con el donut de tiny grande en
   la esquina, distinta del icono del navegador. Lo pone el exe como segundo icono (`id 2`) y la
-  asociación apunta ahí, así que el archivo no se confunde con el programa que lo abre. Las variantes
-  y el generador quedan en `tools/make_file_icon.py` y `tools/file-icons/`.
+  asociación apunta ahí, así que el archivo no se confunde con el programa que lo abre. Sale del
+  dibujo `TinyObjectIcon.png` con `tools/make_icons.py`.
 - Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
   ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno y se
   reafirma en cada arranque, así que mover el exe no la rompe. Si otro programa ya era dueño de `.to`,
@@ -200,7 +200,7 @@ del perfil), no del programa.
 | Qué | Dónde |
 | --- | --- |
 | Todo el programa | `tinybrowser.cpp` (Win32 + WebView2) |
-| Icono | `tinybrowser.ico` + `tinybrowser.rc`; se regenera con `tools/make_icon.py` |
+| Iconos | `tinybrowser.ico` y `tiny-file.ico` + `tinybrowser.rc`; se generan con `tools/make_icons.py` desde `TinyBrowserIcon.png` y `TinyObjectIcon.png` |
 | Compilación | `build.bat` |
 | SDK de WebView2 | lo baja `tools/fetch-sdk.ps1` a `sdk/` (NuGet `Microsoft.Web.WebView2` 1.0.4258.31) |
 | Tamaño de la ventana | `kWidth` / `kHeight` |
@@ -219,10 +219,13 @@ Tres decisiones que explican el resto:
 - **Un solo hilo tocando el motor.** El intento anterior en Python se congelaba (AppHangB1)
   porque una capa intermedia llamaba a COM desde otro hilo. Acá todas las llamadas a WebView2
   salen del mismo hilo que el bucle de mensajes.
-- **El icono se dibuja por código, no en un editor.** `tools/make_icon.py` genera el `.ico`
-  (entradas BMP de 4 bits, paleta VGA de 16 colores, 16/32/48 px, 2,7 KB en total) y además un
-  pliego con todas las variantes en `tools/preview.png`, para poder comparar y volver atrás sin
-  depender de la memoria.
+- **Los iconos se reducen desde el dibujo original, una entrada por cada medida de Windows.**
+  `tools/make_icons.py` toma los dos PNG y arma cada `.ico` con diez medidas (16, 20, 24, 32, 40,
+  48, 64, 96, 128 y 256 px): Windows no suaviza nada por su cuenta, elige la medida más cercana que
+  el archivo ofrezca y la escala, así que la nitidez está en tener la medida exacta. Cada reducción
+  se hace en alfa premultiplicado, porque reducir un RGBA cuyos píxeles transparentes todavía llevan
+  color arrastra ese color al borde y deja un contorno oscuro sobre fondo blanco. Son ~130 KB por
+  icono: 255 KB más en el exe, el precio de no verse borroso en ninguna vista del Explorador.
 
 ## Nitidez a 160 píxeles
 

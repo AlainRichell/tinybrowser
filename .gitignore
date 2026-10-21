@@ -12,4 +12,6 @@ sdk/
 
 # Salidas del generador del icono de los .to: se recrean con python tools/make_file_icon.py
 tools/file-icons/
+# Pliegos de comparación de tools/make_icons.py
+tools/icon-previews/
 __pycache__/
