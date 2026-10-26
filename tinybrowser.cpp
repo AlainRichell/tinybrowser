@@ -921,6 +921,9 @@ void ToggleAllInstances();  // defined with the app-wide chord below
 // the same press, so two of them can never drift into opposite states.
 void HideInstance() {
   if (g_window && IsWindowVisible(g_window)) {
+    if (g_controller) {
+      g_controller->put_IsVisible(FALSE);
+    }
     ShowWindow(g_window, SW_HIDE);
   }
 }
