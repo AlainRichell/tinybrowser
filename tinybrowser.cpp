@@ -3080,13 +3080,24 @@ void DoUninstall() {
   const std::wstring target = InstalledExe();
   if (SamePath(CurrentExe(), target)) {
     ParkCopy(target);  // the running image cannot be deleted, only moved out of the way
-  } else {
-    DeleteFileW(target.c_str());  // the copy is not the program that is running
+  } else if (!DeleteFileW(target.c_str())) {
+    const DWORD failure = GetLastError();
+    // Another copy may be the running image even when this one is not: it cannot be deleted
+    // either, so it is parked the same way instead of leaving the folder behind.
+    if (failure == ERROR_SHARING_VIOLATION || failure == ERROR_ACCESS_DENIED) {
+      ParkCopy(target);
+    }
+  }
+  // The options file lives next to the exe, and the folder only goes away when it is empty:
+  // forgetting it is what made an uninstall leave everything in place and report it as stuck.
+  const std::wstring folder = InstallFolder();
+  const std::wstring settings = folder + L"\\" + kSettingsFile;
+  if (FileExists(settings)) {
+    DeleteFileW(settings.c_str());
   }
   // The folder only goes away when it is empty, which is the check that catches a copy still in use.
   // A file that was just deleted can stay pending for a moment while its last handle closes, and to
   // RemoveDirectoryW that is simply "not empty": give it a few tries before calling it stuck.
-  const std::wstring folder = InstallFolder();
   bool removed = !FileExists(folder);
   for (int attempt = 0; !removed && attempt < 6; ++attempt) {
     removed = RemoveDirectoryW(folder.c_str()) != 0;
