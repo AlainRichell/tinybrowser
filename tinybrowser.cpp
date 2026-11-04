@@ -1531,29 +1531,6 @@ bool HotkeysApplyHere() {
   return g_instanceCount <= 1;
 }
 
-// ---- TEMPORAL: se quita cuando el usuario confirme que la barra queda debajo ----
-void ZLog(const wchar_t* what) {
-  wchar_t folder[MAX_PATH] = {};
-  if (!GetTempPathW(MAX_PATH, folder)) {
-    return;
-  }
-  lstrcatW(folder, L"tiny-zlog.txt");
-  HANDLE file = CreateFileW(folder, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD written = 0;
-  SYSTEMTIME now = {};
-  GetLocalTime(&now);
-  wchar_t line[256] = {};
-  wsprintfW(line, L"%02d:%02d:%02d.%03d %ls", now.wHour, now.wMinute, now.wSecond,
-            now.wMilliseconds, what);
-  WriteFile(file, line, (DWORD)(lstrlenW(line) * sizeof(wchar_t)), &written, nullptr);
-  WriteFile(file, L"\r\n", 4, &written, nullptr);
-  CloseHandle(file);
-}
-
 bool BarIsAbove() {
   for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
     if (!IsWindowVisible(window)) {
@@ -1572,25 +1549,6 @@ bool BarIsAbove() {
   return false;
 }
 
-void ZLogState(const wchar_t* tag) {
-  wchar_t above[64] = L"-";
-  for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
-    if (!IsWindowVisible(window)) {
-      continue;
-    }
-    if (window == g_window) {
-      break;
-    }
-    wchar_t name[64] = {};
-    if (GetClassNameW(window, name, ARRAYSIZE(name))) {
-      lstrcpynW(above, name, ARRAYSIZE(above));
-    }
-  }
-  wchar_t text[256] = {};
-  wsprintfW(text, L"%ls barAbove=%d firstAbove=%ls", tag, (int)BarIsAbove(), above);
-  ZLog(text);
-}
-// ---- FIN TEMPORAL ----
 
 // The bar is topmost too, and an activated topmost window sits at the top of that band. The shell
 // finishes the reorder after this process is told about it, so one raise does not always hold:
@@ -1617,12 +1575,7 @@ void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND window, LONG 
       lstrcmpiW(name, L"Shell_SecondaryTrayWnd") != 0) {
     return;
   }
-  wchar_t text[128] = {};
-  wsprintfW(text, L"fg %ls obj=%d child=%d", name, (int)object, (int)child);
-  ZLog(text);
-  ZLogState(L"before");
   RaiseOverBar();
-  ZLogState(L"after");
 }
 
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
@@ -3946,7 +3899,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
           SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
-        ZLogState(L"retry");
         if (--g_topmostRetries <= 0) {
           KillTimer(window, kTopmostTimer);
         }
