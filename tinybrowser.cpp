@@ -136,7 +136,8 @@ HHOOK g_mouseHook = nullptr;
 // The bar is topmost too, and the window being activated sits at the top of that band: a click
 // on the bar brings it over this window, and this hook is what puts the window back on top.
 HWINEVENTHOOK g_foregroundHook = nullptr;
-int g_topmostRetries = 0;  // how many more passes RaiseOverBar still owes
+HWINEVENTHOOK g_minimizeHook = nullptr;
+int g_topmostRetries = 0;  // how many more passes KeepOverBar still owes
 // Composition hosting: the engine draws into this DirectComposition tree instead of a child HWND.
 // It is the only mode where a page can have per-pixel alpha, which is what lets a colour be made
 // transparent to the desktop. The price is that pointer input has to be forwarded by hand.
@@ -1550,17 +1551,29 @@ bool BarIsAbove() {
 }
 
 
-// The bar is topmost too, and an activated topmost window sits at the top of that band. The shell
-// finishes the reorder after this process is told about it, so one raise does not always hold:
-// a few short retries win that race.
-void RaiseOverBar() {
-  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  g_topmostRetries = 3;
-  SetTimer(g_window, kTopmostTimer, 120, nullptr);
+// The bar is topmost too, and the shell reorders it a few milliseconds AFTER it reports the
+// activation, so raising at that instant is usually too early and the bar stays in front until
+// the next pass. These short passes are what win the race; each one only touches the z-order
+// while the bar is really in front, so nothing moves when there is nothing to fix.
+void KeepOverBar() {
+  // If the shell was quicker than its own event, the bar is already in front and this pass wins
+  // right away.
+  if (BarIsAbove()) {
+    SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  g_topmostRetries = 8;
+  SetTimer(g_window, kTopmostTimer, 15, nullptr);
 }
 
-// Only the bar is answered: another app, the Start menu or the notification panel keeps the
-// z-order the system gave it, so those are still allowed to cover the window.
+// A click on the bar is the reported case; a click on the desktop reorders the bar the same way,
+// without anything of tiny being minimised. Another app, the Start menu and the notification
+// panel are not answered, so the system keeps the z-order it gave them.
+bool BringsTheBarForward(const wchar_t* name) {
+  return lstrcmpiW(name, L"Shell_TrayWnd") == 0 ||
+         lstrcmpiW(name, L"Shell_SecondaryTrayWnd") == 0 ||
+         lstrcmpiW(name, L"Progman") == 0 || lstrcmpiW(name, L"WorkerW") == 0;
+}
+
 void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND window, LONG object,
                                   LONG child, DWORD, DWORD) {
   if (event != EVENT_SYSTEM_FOREGROUND || window == nullptr || object != OBJID_WINDOW ||
@@ -1568,14 +1581,21 @@ void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND window, LONG 
     return;
   }
   wchar_t name[64] = {};
-  if (!GetClassNameW(window, name, ARRAYSIZE(name))) {
+  if (!GetClassNameW(window, name, ARRAYSIZE(name)) || !BringsTheBarForward(name)) {
     return;
   }
-  if (lstrcmpiW(name, L"Shell_TrayWnd") != 0 &&
-      lstrcmpiW(name, L"Shell_SecondaryTrayWnd") != 0) {
+  KeepOverBar();
+}
+
+// Win+D minimises every window and the bar ends up in front on that same pass. It is answered
+// here too because the desktop's own window is not always the one that takes the foreground.
+void CALLBACK OnMinimizeStart(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child,
+                              DWORD, DWORD) {
+  if (event != EVENT_SYSTEM_MINIMIZESTART || window == nullptr || object != OBJID_WINDOW ||
+      child != CHILDID_SELF || g_window == nullptr || !IsWindowVisible(g_window)) {
     return;
   }
-  RaiseOverBar();
+  KeepOverBar();
 }
 
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
@@ -3963,9 +3983,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     case WM_ACTIVATE:
       // Losing the activation to the bar is the same event seen from this side, and it also
       // counts when the bar was already the foreground one.
-      if (LOWORD(wparam) == WA_INACTIVE && g_window && IsWindowVisible(g_window) &&
-          BarIsAbove()) {
-        RaiseOverBar();
+      if (LOWORD(wparam) == WA_INACTIVE && g_window && IsWindowVisible(g_window)) {
+        KeepOverBar();
       }
       break;
     case WM_SETFOCUS:
@@ -3991,6 +4010,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (g_foregroundHook) {
         UnhookWinEvent(g_foregroundHook);
         g_foregroundHook = nullptr;
+      }
+      if (g_minimizeHook) {
+        UnhookWinEvent(g_minimizeHook);
+        g_minimizeHook = nullptr;
       }
       if (g_chordOwner) {
         CloseHandle(g_chordOwner);  // frees the name so another copy can take the chord over
@@ -4166,6 +4189,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
                                      OnForegroundChanged, 0, 0,
                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  g_minimizeHook = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND,
+                                   nullptr, OnMinimizeStart, 0, 0,
+                                   WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
   ShowWindow(g_window, showCommand);
   FitAndPlace();
@@ -4195,6 +4221,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (g_foregroundHook) {
     UnhookWinEvent(g_foregroundHook);
     g_foregroundHook = nullptr;
+  }
+  if (g_minimizeHook) {
+    UnhookWinEvent(g_minimizeHook);
+    g_minimizeHook = nullptr;
   }
 
   // The window is gone, so the copies left are the whole app: one of them adopts the icon if this
