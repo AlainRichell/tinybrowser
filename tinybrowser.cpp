@@ -49,6 +49,7 @@ constexpr int  kMinHeight = 60;
 constexpr int  kMargin = 24;   // gap to the right and bottom edges of the desktop
 constexpr UINT_PTR kFitTimer = 1;      // one-shot: measure the page after it settles
 constexpr UINT_PTR kResizeTimer = 2;   // one-shot: re-fit once the resize drag settles
+constexpr UINT_PTR kTopmostTimer = 3;  // short retries while the bar takes the foreground
 constexpr UINT kResizeSettle = 180;    // ms of quiet before that happens
 constexpr double kMinZoom = 0.10;
 constexpr double kMaxZoom = 1.0;
@@ -132,6 +133,10 @@ constexpr int kKeyRangeMax = 40;
 bool g_keyRangeLocal = false;
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
+// The bar is topmost too, and the window being activated sits at the top of that band: a click
+// on the bar brings it over this window, and this hook is what puts the window back on top.
+HWINEVENTHOOK g_foregroundHook = nullptr;
+int g_topmostRetries = 0;  // how many more passes RaiseOverBar still owes
 // Composition hosting: the engine draws into this DirectComposition tree instead of a child HWND.
 // It is the only mode where a page can have per-pixel alpha, which is what lets a colour be made
 // transparent to the desktop. The price is that pointer input has to be forwarded by hand.
@@ -1524,6 +1529,100 @@ bool HotkeysApplyHere() {
       },
       0);
   return g_instanceCount <= 1;
+}
+
+// ---- TEMPORAL: se quita cuando el usuario confirme que la barra queda debajo ----
+void ZLog(const wchar_t* what) {
+  wchar_t folder[MAX_PATH] = {};
+  if (!GetTempPathW(MAX_PATH, folder)) {
+    return;
+  }
+  lstrcatW(folder, L"tiny-zlog.txt");
+  HANDLE file = CreateFileW(folder, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD written = 0;
+  SYSTEMTIME now = {};
+  GetLocalTime(&now);
+  wchar_t line[256] = {};
+  wsprintfW(line, L"%02d:%02d:%02d.%03d %ls", now.wHour, now.wMinute, now.wSecond,
+            now.wMilliseconds, what);
+  WriteFile(file, line, (DWORD)(lstrlenW(line) * sizeof(wchar_t)), &written, nullptr);
+  WriteFile(file, L"\r\n", 4, &written, nullptr);
+  CloseHandle(file);
+}
+
+bool BarIsAbove() {
+  for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+    if (!IsWindowVisible(window)) {
+      continue;
+    }
+    if (window == g_window) {
+      return false;
+    }
+    wchar_t name[64] = {};
+    if (GetClassNameW(window, name, ARRAYSIZE(name)) &&
+        (lstrcmpiW(name, L"Shell_TrayWnd") == 0 ||
+         lstrcmpiW(name, L"Shell_SecondaryTrayWnd") == 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ZLogState(const wchar_t* tag) {
+  wchar_t above[64] = L"-";
+  for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+    if (!IsWindowVisible(window)) {
+      continue;
+    }
+    if (window == g_window) {
+      break;
+    }
+    wchar_t name[64] = {};
+    if (GetClassNameW(window, name, ARRAYSIZE(name))) {
+      lstrcpynW(above, name, ARRAYSIZE(above));
+    }
+  }
+  wchar_t text[256] = {};
+  wsprintfW(text, L"%ls barAbove=%d firstAbove=%ls", tag, (int)BarIsAbove(), above);
+  ZLog(text);
+}
+// ---- FIN TEMPORAL ----
+
+// The bar is topmost too, and an activated topmost window sits at the top of that band. The shell
+// finishes the reorder after this process is told about it, so one raise does not always hold:
+// a few short retries win that race.
+void RaiseOverBar() {
+  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  g_topmostRetries = 3;
+  SetTimer(g_window, kTopmostTimer, 120, nullptr);
+}
+
+// Only the bar is answered: another app, the Start menu or the notification panel keeps the
+// z-order the system gave it, so those are still allowed to cover the window.
+void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND window, LONG object,
+                                  LONG child, DWORD, DWORD) {
+  if (event != EVENT_SYSTEM_FOREGROUND || window == nullptr || object != OBJID_WINDOW ||
+      child != CHILDID_SELF || g_window == nullptr || !IsWindowVisible(g_window)) {
+    return;
+  }
+  wchar_t name[64] = {};
+  if (!GetClassNameW(window, name, ARRAYSIZE(name))) {
+    return;
+  }
+  if (lstrcmpiW(name, L"Shell_TrayWnd") != 0 &&
+      lstrcmpiW(name, L"Shell_SecondaryTrayWnd") != 0) {
+    return;
+  }
+  wchar_t text[128] = {};
+  wsprintfW(text, L"fg %ls obj=%d child=%d", name, (int)object, (int)child);
+  ZLog(text);
+  ZLogState(L"before");
+  RaiseOverBar();
+  ZLogState(L"after");
 }
 
 LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
@@ -3842,6 +3941,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       } else if (wparam == kFitTimer) {
         KillTimer(window, kFitTimer);
         OnFitTimer();
+      } else if (wparam == kTopmostTimer) {
+        if (BarIsAbove()) {
+          SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        ZLogState(L"retry");
+        if (--g_topmostRetries <= 0) {
+          KillTimer(window, kTopmostTimer);
+        }
       } else if (wparam == kResizeTimer) {
         KillTimer(window, kResizeTimer);
         if (g_controller) {
@@ -3900,6 +4008,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       ForwardMouse(message, wparam, lparam);
       return 0;
     }
+    case WM_ACTIVATE:
+      // Losing the activation to the bar is the same event seen from this side, and it also
+      // counts when the bar was already the foreground one.
+      if (LOWORD(wparam) == WA_INACTIVE && g_window && IsWindowVisible(g_window) &&
+          BarIsAbove()) {
+        RaiseOverBar();
+      }
+      break;
     case WM_SETFOCUS:
       if (g_controller) {
         g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -3919,6 +4035,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       if (g_mouseHook) {
         UnhookWindowsHookEx(g_mouseHook);
         g_mouseHook = nullptr;
+      }
+      if (g_foregroundHook) {
+        UnhookWinEvent(g_foregroundHook);
+        g_foregroundHook = nullptr;
       }
       if (g_chordOwner) {
         CloseHandle(g_chordOwner);  // frees the name so another copy can take the chord over
@@ -4089,6 +4209,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   SeedHotkeyState();
   g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboard, GetModuleHandleW(nullptr), 0);
   g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouse, GetModuleHandleW(nullptr), 0);
+  // Out-of-context: the callback comes back on this thread's message loop, so no DLL is
+  // involved. The bar's window is the only one the callback acts on.
+  g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                     OnForegroundChanged, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
   ShowWindow(g_window, showCommand);
   FitAndPlace();
@@ -4114,6 +4239,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (g_mouseHook) {
     UnhookWindowsHookEx(g_mouseHook);
     g_mouseHook = nullptr;
+  }
+  if (g_foregroundHook) {
+    UnhookWinEvent(g_foregroundHook);
+    g_foregroundHook = nullptr;
   }
 
   // The window is gone, so the copies left are the whole app: one of them adopts the icon if this
