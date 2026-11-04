@@ -77,9 +77,14 @@ constexpr UINT kCommandSettings = 12;  // a switch changed in another copy
 constexpr UINT kPickTimer = 8;         // keeps the pipette's bulb on the colour under the tip
 constexpr UINT kCommandPick = 13;      // the eyedropper was clicked
 constexpr UINT kCommandPickCancel = 14;  // ... or given up
+constexpr UINT kCommandTrayTake = 15;    // the copy that held the icon is gone: take it over
+constexpr UINT kCommandTrayTip = 16;     // a copy started or closed: the tooltip counts again
+// The icon answers on its own message, away from the chords' kHotkeyMessage.
+constexpr UINT kTrayMessage = WM_APP + 2;
+constexpr UINT kTrayId = 1;  // one icon per window handle, and this app has one
 
 
-// The two switches are kept in a file next to the exe so every copy starts with the same answers.
+// The switches are kept in a file next to the exe so every copy starts with the same answers.
 constexpr wchar_t kSettingsFile[] = L"tinybrowser.ini";
 constexpr wchar_t kSettingsSection[] = L"options";
 
@@ -103,6 +108,14 @@ COLORREF g_pickPreview = CLR_INVALID;  // colour shown in the pipette's bulb
 POINT g_pickAt = {};          // where the eyedropper was clicked
 bool g_blockOverlap = true;   // option: a window never ends up on top of another one
 bool g_pushOthers = false;    // option: the window being dragged moves its neighbours aside
+// Option: the window lives in the notification area instead of the taskbar. One icon answers for the
+// whole app -- the copy that owns Ctrl+Alt+C holds it -- because the taskbar grouped the copies into
+// a single button and one icon per window would be worse than the button it replaces.
+bool g_trayOnly = true;
+bool g_trayIconAdded = false;  // this copy is the one holding the icon
+HICON g_trayIcon = nullptr;    // the small icon the notification area shows
+UINT g_taskbarCreated = 0;     // "TaskbarCreated": explorer restarted and wants the icon back
+bool g_heldTrayIcon = false;   // this copy held the icon when it was closed
 // How far around the picked colour the key still reaches, in 8-bit levels per channel. 0 keys only
 // the exact value; the eyedropper reads a screen pixel that may differ by a level or two from what
 // the page painted, so some margin is what makes it usable at all.
@@ -176,11 +189,11 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #commands .k{display:inline-block;min-width:58px;color:#7fb3d5}
   #closepanel{font-size:9px;color:#5b6b7d;margin-top:1px}
   #options{display:inline-flex;align-items:center;justify-content:center}
-  #settings{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:6;padding:3px 5px;
-    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.1;
-    color:#9db2c6;overflow:hidden}
+  #settings{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:6;padding:2px 5px;
+    background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1;
+    color:#9db2c6;overflow:auto}
   #settings[hidden]{display:none}
-  #settings .title{color:#7fb3d5;margin-bottom:2px}
+  #settings .title{color:#7fb3d5;margin-bottom:1px}
   #settings label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
   #settings input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;
     accent-color:#4a90c2;cursor:pointer}
@@ -230,6 +243,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div class="title">Opciones</div>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
+<label><input type="checkbox" id="trayonly"%CHECKED_TRAY%><span>Solo en notificaciones</span></label>
 <label class="range"><span>Rango del color</span><span class="value" id="keyrangevalue">%KEY_RANGE%</span></label>
 <input type="range" id="keyrange" min="0" max="40" step="1" value="%KEY_RANGE%">
 </div>
@@ -289,6 +303,8 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     pushOthers.disabled = !noOverlap.checked;
   };
   pushOthers.onchange = function () { send("P" + (pushOthers.checked ? "1" : "0")); };
+  var trayOnly = document.getElementById("trayonly");
+  trayOnly.onchange = function () { send("Y" + (trayOnly.checked ? "1" : "0")); };
   // The range only travels on release: dragging would otherwise rewrite the settings file and
   // re-filter every window on each pixel of the slider.
   var keyRange = document.getElementById("keyrange");
@@ -548,6 +564,7 @@ void ShowBar() {
   }
   ReplaceToken(&html, L"%CHECKED_OVERLAP%", g_blockOverlap ? L" checked" : L"");
   ReplaceToken(&html, L"%CHECKED_PUSH%", g_pushOthers ? L" checked" : L"");
+  ReplaceToken(&html, L"%CHECKED_TRAY%", g_trayOnly ? L" checked" : L"");
   wchar_t rangeValue[8] = {};
   wsprintfW(rangeValue, L"%d", g_keyRange);
   ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
@@ -912,9 +929,11 @@ void TogglePicking() {
   SetTimer(g_window, kPickTimer, 40, nullptr);
 }
 void LoadSettings();            // defined with the other instance-wide helpers below
+void ApplyTrayMode();           // the icon follows this copy and the app-wide switch
+void UpdateTrayTip();
 
-// Ctrl+Alt+C is the only way in and out of hiding: a hidden window leaves the taskbar and the
-// z-order, so nothing else on screen could bring it back.
+// Ctrl+Alt+C and the notification icon are the two ways in and out of hiding: a hidden window
+// leaves the taskbar and the z-order, so nothing else on screen could bring it back.
 void ToggleAllInstances();  // defined with the app-wide chord below
 
 // Hiding and showing are commands rather than toggles: every copy of the app obeys the same one on
@@ -986,9 +1005,14 @@ void HandleHotkey(UINT id, LPARAM data) {
     ShowInstance(data != 0);
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
+    ApplyTrayMode();
     if (!g_keyColours.empty()) {
       RunColourKey();
     }
+  } else if (id == kCommandTrayTake) {
+    ApplyTrayMode();  // the icon is free: this copy may be the one to adopt it
+  } else if (id == kCommandTrayTip) {
+    UpdateTrayTip();
   } else if (id == kHotkeyPick) {
     TogglePicking();
   } else if (id == kCommandPick) {
@@ -1104,6 +1128,7 @@ void ToggleAllInstances() {
     const LPARAM focus = (command == kCommandShowAll && peer == g_window) ? 1 : 0;
     PostMessageW(peer, kHotkeyMessage, command, focus);
   }
+  UpdateTrayTip();
 }
 
 // The file sits beside the exe. Writing it can fail (a read-only folder) and that is fine: the
@@ -1131,6 +1156,7 @@ void LoadSettings() {
   }
   g_blockOverlap = GetPrivateProfileIntW(kSettingsSection, L"NoOverlap", 1, path) != 0;
   g_pushOthers = GetPrivateProfileIntW(kSettingsSection, L"PushOthers", 0, path) != 0;
+  g_trayOnly = GetPrivateProfileIntW(kSettingsSection, L"TrayOnly", 1, path) != 0;
   // A window that opened a snapshot keeps the margin that .to brought: the file answers for the
   // app, and this window already has its own answer.
   if (!g_keyRangeLocal) {
@@ -1150,6 +1176,8 @@ void SaveSettings() {
   WritePrivateProfileStringW(kSettingsSection, L"NoOverlap", value, path);
   wsprintfW(value, L"%d", g_pushOthers ? 1 : 0);
   WritePrivateProfileStringW(kSettingsSection, L"PushOthers", value, path);
+  wsprintfW(value, L"%d", g_trayOnly ? 1 : 0);
+  WritePrivateProfileStringW(kSettingsSection, L"TrayOnly", value, path);
   wsprintfW(value, L"%d", g_keyRange);
   WritePrivateProfileStringW(kSettingsSection, L"KeyRange", value, path);
 }
@@ -1202,6 +1230,184 @@ void UseStateKeyRange(int value) {
   const int clamped = value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value);
   g_keyRange = clamped;
   g_keyRangeLocal = true;
+}
+
+// The notification area. One icon answers for the whole app: the copy that owns Ctrl+Alt+C holds it,
+// so eight windows still cost one icon -- the same grouping the taskbar did -- and a click does what
+// that chord does. Keeping the window out of the taskbar is a style, not a second window: the engine,
+// the colour key and the window geometry never learn about it.
+
+enum TrayMenu : UINT {
+  kTrayMenuToggle = 1,
+  kTrayMenuNew = 2,
+  kTrayMenuQuit = 3,
+};
+
+// "3 ventanas" is what says the icon is the app and not one of its windows. The count comes from the
+// same enumeration the chord uses, so it is always the copies that exist right now.
+void FillTrayTip(wchar_t* tip, size_t length) {
+  CollectInstances();
+  const size_t count = g_instances.size();
+  if (count > 1) {
+    StringCchPrintfW(tip, length, L"Tiny Browser - %u ventanas", (unsigned)count);
+  } else {
+    StringCchCopyW(tip, length, L"Tiny Browser");
+  }
+}
+
+void UpdateTrayTip() {
+  if (!g_trayIconAdded || !g_window) {
+    return;
+  }
+  NOTIFYICONDATAW icon = {};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = g_window;
+  icon.uID = kTrayId;
+  icon.uFlags = NIF_TIP;
+  FillTrayTip(icon.szTip, ARRAYSIZE(icon.szTip));
+  Shell_NotifyIconW(NIM_MODIFY, &icon);
+}
+
+// The tooltip counts the copies, so every copy that appears or disappears tells the one holding the
+// icon to count again. This copy is skipped: it is already counted, or already gone.
+void RefreshTrayCountEverywhere() {
+  CollectInstances();
+  for (HWND peer : g_instances) {
+    if (peer != g_window) {
+      PostMessageW(peer, kHotkeyMessage, kCommandTrayTip, 0);
+    }
+  }
+}
+
+void AddTrayIcon() {
+  if (!g_window || g_trayIconAdded) {
+    return;
+  }
+  NOTIFYICONDATAW icon = {};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = g_window;
+  icon.uID = kTrayId;
+  icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  icon.uCallbackMessage = kTrayMessage;
+  icon.hIcon = g_trayIcon ? g_trayIcon : LoadIconW(nullptr, IDI_APPLICATION);
+  FillTrayTip(icon.szTip, ARRAYSIZE(icon.szTip));
+  // Add first, modify second: a shell that already knows this icon (an explorer that came back)
+  // answers the add with a failure, and the modify is what puts it in place again.
+  if (Shell_NotifyIconW(NIM_ADD, &icon) || Shell_NotifyIconW(NIM_MODIFY, &icon)) {
+    g_trayIconAdded = true;
+  }
+}
+
+bool RemoveTrayIcon() {
+  if (!g_trayIconAdded) {
+    return false;
+  }
+  NOTIFYICONDATAW icon = {};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = g_window;
+  icon.uID = kTrayId;
+  Shell_NotifyIconW(NIM_DELETE, &icon);
+  g_trayIconAdded = false;
+  return true;
+}
+
+// A copy with no arguments opens on the bar: there is no page to duplicate, and the bar is what a
+// brand new window shows.
+void LaunchNewWindow() {
+  wchar_t exe[MAX_PATH] = {};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", exe, L"", nullptr, SW_SHOWNORMAL);
+}
+
+void CloseEveryInstance() {
+  CollectInstances();
+  for (HWND peer : g_instances) {
+    PostMessageW(peer, WM_CLOSE, 0, 0);
+  }
+}
+
+void ShowTrayMenu() {
+  if (!g_window) {
+    return;
+  }
+  CollectInstances();
+  const bool anyVisible = g_anyInstanceVisible;
+  HMENU menu = CreatePopupMenu();
+  if (!menu) {
+    return;
+  }
+  AppendMenuW(menu, MF_STRING, kTrayMenuToggle, anyVisible ? L"Ocultar todas" : L"Mostrar todas");
+  AppendMenuW(menu, MF_STRING, kTrayMenuNew, L"Ventana nueva");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kTrayMenuQuit, L"Salir");
+  POINT at = {};
+  GetCursorPos(&at);
+  // The menu belongs to this thread, and handing it the foreground first is what makes a click
+  // anywhere else close it instead of leaving it on screen.
+  SetForegroundWindow(g_window);
+  const UINT chosen = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, at.x,
+                                     at.y, 0, g_window, nullptr);
+  DestroyMenu(menu);
+  PostMessageW(g_window, WM_NULL, 0, 0);
+  if (chosen == kTrayMenuToggle) {
+    ToggleAllInstances();
+    UpdateTrayTip();
+  } else if (chosen == kTrayMenuNew) {
+    LaunchNewWindow();
+  } else if (chosen == kTrayMenuQuit) {
+    CloseEveryInstance();
+  }
+}
+
+void OnTrayMessage(LPARAM lparam) {
+  const UINT event = LOWORD(lparam);
+  if (event == WM_LBUTTONUP) {
+    ToggleAllInstances();
+    UpdateTrayTip();
+  } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
+    ShowTrayMenu();
+  }
+}
+
+// The switch is app-wide, so every copy obeys it; the icon is not, and only the copy that owns the
+// chord may hold it. That is what keeps one icon when another window turns the option on.
+void ApplyTrayMode() {
+  if (!g_window) {
+    return;
+  }
+  const LONG_PTR style = GetWindowLongPtrW(g_window, GWL_EXSTYLE);
+  const LONG_PTR wanted = g_trayOnly ? (style | WS_EX_TOOLWINDOW) : (style & ~WS_EX_TOOLWINDOW);
+  if (wanted != style) {
+    SetWindowLongPtrW(g_window, GWL_EXSTYLE, wanted);
+    // The shell reads that style when a window shows, so a live switch needs one hide/show cycle.
+    // Focus is only taken back when this window was the one in front.
+    if (IsWindowVisible(g_window)) {
+      const bool wasFocused = GetForegroundWindow() == g_window;
+      HideInstance();
+      ShowInstance(wasFocused);
+    }
+  }
+  if (!g_trayOnly) {
+    RemoveTrayIcon();
+    return;
+  }
+  if (!WeOwnTheChord()) {
+    return;
+  }
+  AddTrayIcon();
+  UpdateTrayTip();
+}
+
+void SetTrayOnly(bool on) {
+  if (g_trayOnly == on) {
+    return;
+  }
+  g_trayOnly = on;
+  SaveSettings();
+  ShareSettings();
+  ApplyTrayMode();
 }
 
 bool g_ctrlDown = false;
@@ -1926,6 +2132,7 @@ void OnBarCommand(const std::wstring& message) {
     // From the options panel: the switches themselves, and the note that they changed.
     case L'N': SetBlockOverlap(message.size() > 1 && message[1] == L'1'); break;
     case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
+    case L'Y': SetTrayOnly(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
     // From the setup panel: install, uninstall and the desktop icon. The bar is rebuilt so the panel
     // comes back showing what the machine now holds.
@@ -3536,6 +3743,12 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  // Explorer restarted: the shell lost every icon it had and asks the apps to put theirs back.
+  if (g_taskbarCreated && message == g_taskbarCreated) {
+    g_trayIconAdded = false;
+    ApplyTrayMode();
+    return 0;
+  }
   switch (message) {
     case WM_ERASEBKGND:
       return 1;  // nothing of our own to paint: the composition is the window
@@ -3571,6 +3784,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       return 0;
     case kHotkeyMessage:
       HandleHotkey((UINT)wparam, lparam);
+      return 0;
+    case kTrayMessage:
+      OnTrayMessage(lparam);
       return 0;
     case WM_SETCURSOR:
       if (g_picking && g_pickCursor) {
@@ -3617,6 +3833,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       }
       return 0;
     case WM_DESTROY:
+      g_heldTrayIcon = RemoveTrayIcon();
       g_webview.Reset();
       if (g_controller) {
         g_controller->Close();
@@ -3649,6 +3866,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  // Explorer can restart while the app runs; it asks every window with this message to put its
+  // notification icon back.
+  g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
   const std::wstring arguments = Trim(commandLine ? commandLine : L"");
   // What Settings > Installed apps runs: no window, no engine, and nothing restated on the way out.
   if (lstrcmpiW(arguments.c_str(), L"--uninstall") == 0) {
@@ -3743,6 +3963,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
                                           GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
   const HICON iconSmall = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(kIconId), IMAGE_ICON,
                                             GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+  g_trayIcon = iconSmall;  // the notification area shows the small one
 
   WNDCLASSEXW windowClass = {};
   windowClass.cbSize = sizeof(windowClass);
@@ -3774,8 +3995,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   }
   // No redirection bitmap: the window owns no GDI surface, so what shows is exactly the composition
   // tree, alpha included. Without this the page could never be see-through to the desktop.
+  // WS_EX_TOOLWINDOW is what keeps the button out of the taskbar (and out of Alt+Tab): the same
+  // window, the same engine, only without a shell entry of its own.
+  const DWORD exStyle =
+      WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP | (g_trayOnly ? WS_EX_TOOLWINDOW : 0);
   g_window = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, kWindowClass, kTitle, WS_POPUP,
+      exStyle, kWindowClass, kTitle, WS_POPUP,
       x, y, width, height,
       nullptr, nullptr, instance, nullptr);
   if (!g_window) {
@@ -3798,6 +4023,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // keyboard focus, and the engine is reminded of it once the controller exists.
   SetForegroundWindow(g_window);
   SetFocus(g_window);
+  // The icon replaces the taskbar button, so it is there from the first frame.
+  ApplyTrayMode();
+  RefreshTrayCountEverywhere();
   CreateWebView();
 
   MSG message = {};
@@ -3813,6 +4041,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (g_mouseHook) {
     UnhookWindowsHookEx(g_mouseHook);
     g_mouseHook = nullptr;
+  }
+
+  // The window is gone, so the copies left are the whole app: one of them adopts the icon if this
+  // one held it, and the tooltip counts again either way.
+  CollectInstances();
+  for (HWND peer : g_instances) {
+    PostMessageW(peer, kHotkeyMessage, g_heldTrayIcon ? kCommandTrayTake : kCommandTrayTip, 0);
   }
 
   CoUninitialize();

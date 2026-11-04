@@ -32,9 +32,10 @@ se copia a cualquier PC con Windows y anda.
   agujero. `Escape` o el botón derecho salen del gotero y dejan todo lo elegido como está;
   `Ctrl+Alt+A` en ese momento también sale, y otra vez `Ctrl+Alt+A` devuelve la ventana a la
   normalidad, con sus barras.
-- `Ctrl+Alt+C` las oculta a todas: cada copia abierta sale de la pantalla y de la barra de tareas,
-  y el mismo `Ctrl+Alt+C` las vuelve a mostrar todas juntas. Es la única forma de ocultarlas y de
-  traerlas de vuelta; al volver, la que retoma el teclado es la que estaba en uso.
+- `Ctrl+Alt+C` las oculta a todas: cada copia abierta sale de la pantalla y, con el icono del área de
+  notificaciones activado, ese icono queda como la otra puerta de vuelta. El mismo `Ctrl+Alt+C` (o un
+  clic en el icono) las vuelve a mostrar todas juntas; al volver, la que retoma el teclado es la que
+  estaba en uso.
 - El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
   La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
 - Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
@@ -99,7 +100,7 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
 - El panel muestra la versión instalada y la de esta build, y es el estado de la máquina, así que todas
   las ventanas ven lo mismo.
 - La versión y los nombres viajan en el exe (recurso `VERSIONINFO`): Explorer y la barra de tareas
-  dicen **Tiny Browser** 1.0.0, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
+  dicen **Tiny Browser** 1.1.0, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
   `tinyversion.h`, un solo lugar para el recurso y para el panel.
 
 ### Guardar un estado: los archivos `.to`
@@ -154,7 +155,7 @@ traer el suyo: ese manda sólo en la ventana que lo abrió, sin tocar el archivo
 ## Opciones
 
 El botón de las tres líneas con perillas, en la barra, abre el panel de opciones (se cierra con un
-clic fuera de los controles o con `Escape`). Son dos interruptores y se guardan en `tinybrowser.ini`,
+clic fuera de los controles o con `Escape`). Son tres interruptores y se guardan en `tinybrowser.ini`,
 al lado del exe, así que valen para todas las ventanas y siguen ahí la próxima vez:
 
 - **No solapar ventanas** (activado de fábrica): ninguna ventana puede quedar encima de otra. Al
@@ -168,6 +169,14 @@ al lado del exe, así que valen para todas las ventanas y siguen ahí la próxim
   Si choca con varias, se corren en cascada, cada una por su propio lado. Cuando alguna no tiene
   lugar para correrse, la que arrastraste se detiene como si la opción estuviera apagada. Necesita la opción de arriba: sin "no solapar" no tiene sentido, por eso queda
   deshabilitada en su lugar mientras aquella está apagada. El redimensionado empuja igual.
+- **Solo en notificaciones** (activado de fábrica): la ventana no ocupa un botón en la barra de tareas
+  y en su lugar queda un icono en el área de notificaciones. Es **un solo icono para toda la app**: el
+  clic izquierdo muestra u oculta todas las ventanas (lo mismo que `Ctrl+Alt+C`) y el clic derecho abre
+  el menú con mostrar/ocultar todas, ventana nueva y salir. Dos cosas que trae el cambio: la ventana
+  tampoco aparece en `Alt+Tab` ni en la vista de tareas, y Windows 11 estrena los iconos nuevos dentro
+  del desplegable `^` del área de notificaciones — hay que arrastrarlo una vez a la vista (o activarlo
+  en Configuración → Personalización → Barra de tareas → Iconos de la bandeja del sistema). Apagado el
+  interruptor, el botón vuelve sin reiniciar.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
 
 ## Requisitos
@@ -209,6 +218,7 @@ del perfil), no del programa.
 | Carpeta de datos | `UserDataFolder()` |
 | Ajuste de ancho por página | `FitPageWidth()` / `ApplyFitZoom()` |
 | Mover la ventana | `MoveBy()` (lo disparan la barra y `Alt`+arrastrar) |
+| Icono del área de notificaciones | `AddTrayIcon()` / `ApplyTrayMode()` |
 | Normalizar direcciones | `Normalize()` |
 
 Tres decisiones que explican el resto:
