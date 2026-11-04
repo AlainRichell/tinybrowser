@@ -1,5 +1,11 @@
 # Novedades
 
+## 1.1.1 - 2026-11-04
+
+- **`Ctrl+Alt+W` oculta una sola ventana**, la que estás usando, y el siguiente `Ctrl+Alt+W` devuelve
+  esa misma en vez de esconder otra: un conmutador de una a la vez. `Ctrl+Alt+C` queda para todas
+  (esconde si hay alguna a la vista, muestra si no hay ninguna).
+
 ## 1.1.0 - 2026-11-04
 
 - **El icono vive en el área de notificaciones.** La ventana ya no ocupa un botón en la barra de tareas:

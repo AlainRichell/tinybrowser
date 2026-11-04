@@ -32,10 +32,13 @@ se copia a cualquier PC con Windows y anda.
   agujero. `Escape` o el botón derecho salen del gotero y dejan todo lo elegido como está;
   `Ctrl+Alt+A` en ese momento también sale, y otra vez `Ctrl+Alt+A` devuelve la ventana a la
   normalidad, con sus barras.
-- `Ctrl+Alt+C` las oculta a todas: cada copia abierta sale de la pantalla y, con el icono del área de
-  notificaciones activado, ese icono queda como la otra puerta de vuelta. El mismo `Ctrl+Alt+C` (o un
-  clic en el icono) las vuelve a mostrar todas juntas; al volver, la que retoma el teclado es la que
-  estaba en uso.
+- `Ctrl+Alt+C` es todas o ninguna: si hay **al menos una** a la vista las oculta todas, y si no hay
+  ninguna las muestra todas juntas. Con el icono del área de notificaciones activado, ese icono es la
+  otra puerta de vuelta; al volver, la que retoma el teclado es la que estaba en uso.
+- `Ctrl+Alt+W` es **una sola ventana**: oculta la que estás usando y el siguiente `Ctrl+Alt+W` te
+  devuelve esa misma en vez de esconder otra, aunque tengas varias abiertas. Es un conmutador de una
+  a la vez: para esconder, la ventana de tiny tiene que estar en uso; para traerla de vuelta no
+  importa en qué programa estés.
 - El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
   La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
 - Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
@@ -80,7 +83,7 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
   desinstalador.
 - **Actualizar** es ese mismo botón cuando la copia instalada declara una versión anterior a la del exe
   que estás corriendo: dice **Actualizar** (o **Reinstalar** si son la misma, **Reemplazar** si la
-  instalada es más nueva) y abajo la línea de versiones, `1.0.0 -> 1.1.0`. La comparación se hace
+  instalada es más nueva) y abajo la línea de versiones, `1.1.0 -> 1.1.1`. La comparación se hace
   leyendo el recurso de versión de cada exe, no la fecha de los archivos, así que no depende de cómo se
   copiaron. Se puede actualizar con la ventana vieja abierta: si el `tiny.exe` está en uso se mueve a la
   carpeta temporal y la copia nueva ocupa su lugar; la ventana que estaba abierta sigue con la versión
@@ -100,7 +103,7 @@ se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrad
 - El panel muestra la versión instalada y la de esta build, y es el estado de la máquina, así que todas
   las ventanas ven lo mismo.
 - La versión y los nombres viajan en el exe (recurso `VERSIONINFO`): Explorer y la barra de tareas
-  dicen **Tiny Browser** 1.1.0, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
+  dicen **Tiny Browser** 1.1.1, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
   `tinyversion.h`, un solo lugar para el recurso y para el panel.
 
 ### Guardar un estado: los archivos `.to`

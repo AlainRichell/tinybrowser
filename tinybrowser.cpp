@@ -69,6 +69,7 @@ constexpr UINT kHotkeyBack = 4;       // Ctrl+Alt+Z
 constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
 constexpr UINT kHotkeyPick = 6;       // Ctrl+Alt+A
 constexpr UINT kHotkeyState = 7;      // Ctrl+Alt+G
+constexpr UINT kHotkeyOne = 8;        // Ctrl+Alt+W
 // CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
@@ -79,6 +80,10 @@ constexpr UINT kCommandPick = 13;      // the eyedropper was clicked
 constexpr UINT kCommandPickCancel = 14;  // ... or given up
 constexpr UINT kCommandTrayTake = 15;    // the copy that held the icon is gone: take it over
 constexpr UINT kCommandTrayTip = 16;     // a copy started or closed: the tooltip counts again
+constexpr UINT kCommandHideOne = 17;     // Ctrl+Alt+W: hide this copy
+constexpr UINT kCommandShowOne = 18;     // ... and bring it back
+// Asked with SendMessage by the copy that owns the chord: the answer is the flag above.
+constexpr UINT kAskHiddenByW = WM_APP + 3;
 // The icon answers on its own message, away from the chords' kHotkeyMessage.
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kTrayId = 1;  // one icon per window handle, and this app has one
@@ -153,6 +158,9 @@ bool g_dragActive = false;     // a hook-driven drag is in progress
 bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
 bool g_setupPanel = false;     // one-shot: the next bar comes up with the setup panel open
+// Ctrl+Alt+W hid this copy, so the next press brings it back instead of hiding another one. Each
+// copy keeps its own answer and the chord owner asks for it; nothing is shared between processes.
+bool g_hiddenByW = false;
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
 double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
@@ -233,6 +241,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div><span class="k">Ctrl+Alt+G</span> guardar / cargar</div>
 <div><span class="k">Ctrl+Alt+Z</span> atr&aacute;s</div>
 <div><span class="k">Ctrl+Alt+C</span> ocultar</div>
+<div><span class="k">Ctrl+Alt+W</span> ocultar una</div>
 <div><span class="k">Ctrl+Alt+A</span> gotero</div>
 <div><span class="k">Ctrl+Alt+X</span> cerrar</div>
 <div><span class="k">Alt+arrastrar</span> mover</div>
@@ -931,6 +940,7 @@ void TogglePicking() {
 void LoadSettings();            // defined with the other instance-wide helpers below
 void ApplyTrayMode();           // the icon follows this copy and the app-wide switch
 void UpdateTrayTip();
+void ToggleOneInstance();       // Ctrl+Alt+W, below the all-or-nothing chord
 
 // Ctrl+Alt+C and the notification icon are the two ways in and out of hiding: a hidden window
 // leaves the taskbar and the z-order, so nothing else on screen could bring it back.
@@ -953,6 +963,7 @@ void ShowInstance(bool focus) {
   if (!g_window) {
     return;
   }
+  g_hiddenByW = false;  // visible again: W has nothing left to bring back
   ShowWindow(g_window, SW_SHOWNA);
   SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   if (g_controller) {
@@ -999,9 +1010,16 @@ void HandleHotkey(UINT id, LPARAM data) {
     }
   } else if (id == kHotkeyHide) {
     ToggleAllInstances();
+  } else if (id == kHotkeyOne) {
+    ToggleOneInstance();
   } else if (id == kCommandHideAll) {
     HideInstance();
   } else if (id == kCommandShowAll) {
+    ShowInstance(data != 0);
+  } else if (id == kCommandHideOne) {
+    g_hiddenByW = true;  // the next W brings this one back, not another
+    HideInstance();
+  } else if (id == kCommandShowOne) {
     ShowInstance(data != 0);
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
@@ -1037,8 +1055,8 @@ void HandleHotkey(UINT id, LPARAM data) {
 // Global shortcuts through a low-level keyboard hook: RegisterHotKey registered fine but
 // never fired for this window, and the hook is what every global-shortcut tool uses.
 // Virtual-key codes for letters are the uppercase character values: 'S' = 0x53, 'X' = 0x58,
-// 'D' = 0x44, 'Z' = 0x5A, 'C' = 0x43. Registering the lowercase values is accepted but never
-// matches.
+// 'D' = 0x44, 'Z' = 0x5A, 'C' = 0x43, 'W' = 0x57. Registering the lowercase values is accepted but
+// never matches.
 constexpr UINT kHotkeyMessage = WM_APP + 1;
 constexpr UINT kHotkeyKeyS = L'S';
 constexpr UINT kHotkeyKeyX = L'X';
@@ -1047,6 +1065,7 @@ constexpr UINT kHotkeyKeyZ = L'Z';
 constexpr UINT kHotkeyKeyC = L'C';
 constexpr UINT kHotkeyKeyA = L'A';
 constexpr UINT kHotkeyKeyG = L'G';
+constexpr UINT kHotkeyKeyW = L'W';
 
 struct HotkeyChord {
   UINT key;
@@ -1060,8 +1079,9 @@ constexpr HotkeyChord kHotkeys[] = {
     {kHotkeyKeyC, kHotkeyHide},
     {kHotkeyKeyA, kHotkeyPick},
     {kHotkeyKeyG, kHotkeyState},
+    {kHotkeyKeyW, kHotkeyOne},
 };
-constexpr int kHotkeyCount = 7;
+constexpr int kHotkeyCount = 8;
 
 // Only one copy of the app drives Ctrl+Alt+C. The named object is the arbiter: whoever creates it
 // owns the chord, and a copy started later takes it over once the previous owner has exited.
@@ -1129,6 +1149,45 @@ void ToggleAllInstances() {
     PostMessageW(peer, kHotkeyMessage, command, focus);
   }
   UpdateTrayTip();
+}
+
+// Ctrl+Alt+W is one window at a time: it hides the copy being used, and the next press brings that
+// same copy back instead of hiding another one. The memory is the flag above, asked over a message,
+// so it does not travel with the chord when that changes hands.
+void ToggleOneInstance() {
+  if (!g_window) {
+    return;
+  }
+  CollectInstances();
+  HWND hidden = nullptr;
+  for (HWND peer : g_instances) {
+    if (peer == g_window) {
+      if (g_hiddenByW) {
+        hidden = g_window;
+      }
+      continue;
+    }
+    DWORD_PTR answer = 0;
+    if (SendMessageTimeoutW(peer, kAskHiddenByW, 0, 0, SMTO_ABORTIFHUNG, 300, &answer) &&
+        answer != 0) {
+      hidden = peer;
+      break;
+    }
+  }
+  if (hidden) {
+    // Back from anywhere: the press is the user asking for that window, keyboard included.
+    PostMessageW(hidden, kHotkeyMessage, kCommandShowOne, 1);
+    return;
+  }
+  // Nothing hidden by W: hide the copy in use, and only that one. With another program in front
+  // there is no "the one in use" to hide, so the press does nothing.
+  const HWND front = GetForegroundWindow();
+  for (HWND peer : g_instances) {
+    if (front && (peer == front || IsChild(peer, front))) {
+      PostMessageW(peer, kHotkeyMessage, kCommandHideOne, 0);
+      return;
+    }
+  }
 }
 
 // The file sits beside the exe. Writing it can fail (a read-only folder) and that is fine: the
@@ -1519,6 +1578,16 @@ LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wparam, LPARAM lparam) {
           // happen at all.
           if (WeOwnTheChord()) {
             PostMessageW(g_window, kHotkeyMessage, kHotkeyHide, 0);
+            return 1;
+          }
+          break;
+        }
+        if (chord.id == kHotkeyOne) {
+          // One window at a time, but still app-wide: only the owner acts, and it decides from the
+          // flags of every copy. Same hook-chain rule as Ctrl+Alt+C -- a copy that does not act has
+          // to let the key through or the owner never sees the press.
+          if (WeOwnTheChord()) {
+            PostMessageW(g_window, kHotkeyMessage, kHotkeyOne, 0);
             return 1;
           }
           break;
@@ -3788,6 +3857,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     case kTrayMessage:
       OnTrayMessage(lparam);
       return 0;
+    case kAskHiddenByW:
+      // Synchronous on purpose: SendMessage hands the answer back to the copy that owns the chord,
+      // which is the only one that needs it.
+      return g_hiddenByW ? 1 : 0;
     case WM_SETCURSOR:
       if (g_picking && g_pickCursor) {
         SetCursor(g_pickCursor);
