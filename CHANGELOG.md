@@ -1,5 +1,19 @@
 # Novedades
 
+## 1.1.2 - 2026-11-04
+
+- **La ventana se queda encima de la barra de tareas.** Al hacer clic en la barra, al hacer clic en el
+  escritorio o al pulsar `Win+D`, tiny vuelve a ponerse delante en un frame en vez de quedarse detrás o
+  de tardar unos 110 ms en recuperarse. El menú Inicio y el panel de notificaciones siguen pudiendo
+  taparla, que es lo correcto.
+- **Seleccionar texto arrastrando vuelve a funcionar.** El motor recibía los movimientos del ratón sin
+  el botón pulsado y los tomaba por un simple hover; ahora cada evento lleva el estado real de los
+  botones (y `Shift`/`Ctrl`, para extender una selección).
+- **Quitar ya no falla.** La desinstalación borra también `tinybrowser.ini` de la carpeta instalada: sin
+  ese archivo la carpeta no quedaba vacía y Windows se negaba a eliminarla. Si otra copia está corriendo
+  desde el exe instalado, se aparta a `%TEMP%` como ya se hacía con la propia.
+- La versión sube a **1.1.2**: el panel de instalación la ofrece como **Actualizar** sobre la 1.1.1.
+
 ## 1.1.1 - 2026-11-04
 
 - **`Ctrl+Alt+W` oculta una sola ventana**, la que estás usando, y el siguiente `Ctrl+Alt+W` devuelve

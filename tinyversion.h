@@ -4,10 +4,10 @@
 
 #define TINY_VERSION_MAJOR 1
 #define TINY_VERSION_MINOR 1
-#define TINY_VERSION_PATCH 1
+#define TINY_VERSION_PATCH 2
 #define TINY_VERSION_BUILD 0
 
-#define TINY_VERSION_STRING "1.1.1"
+#define TINY_VERSION_STRING "1.1.2"
 
 #define TINY_PRODUCT_NAME "Tiny Browser"
 #define TINY_VENDOR_NAME "Unresolute"
@@ -16,7 +16,7 @@
 #define TINY_TYPE_NAME "Tiny Browser snapshot"
 
 // The same names for the code: the resource wants narrow text, C++ builds wide strings.
-#define TINY_VERSION_WIDE L"1.1.1"
+#define TINY_VERSION_WIDE L"1.1.2"
 #define TINY_PRODUCT_WIDE L"Tiny Browser"
 #define TINY_VENDOR_WIDE L"Unresolute"
 #define TINY_TYPE_WIDE L"Tiny Browser snapshot"

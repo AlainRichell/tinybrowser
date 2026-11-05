@@ -3845,7 +3845,7 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
   }
   POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
   COREWEBVIEW2_MOUSE_EVENT_KIND kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
-  COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
+  UINT32 keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
   UINT32 data = 0;
   switch (message) {
     case WM_MOUSEMOVE:
@@ -3891,7 +3891,25 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
     default:
       return;
   }
-  g_composition->SendMouseInput(kind, keys, data, point);
+  // The buttons held have to travel with EVERY event, not only with the press: a move that does
+  // not say the left button is still down is read as a plain hover, which is why dragging over
+  // text selected nothing. Shift and Control go too, so extending a selection works.
+  if (wparam & MK_LBUTTON) {
+    keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
+  }
+  if (wparam & MK_RBUTTON) {
+    keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON;
+  }
+  if (wparam & MK_MBUTTON) {
+    keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON;
+  }
+  if (wparam & MK_SHIFT) {
+    keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT;
+  }
+  if (wparam & MK_CONTROL) {
+    keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL;
+  }
+  g_composition->SendMouseInput(kind, (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)keys, data, point);
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
