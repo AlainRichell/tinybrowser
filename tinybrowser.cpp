@@ -106,6 +106,12 @@ bool g_picking = false;       // eyedropper armed, waiting for the click
 // The colours this window is keying, in the order they were picked. An empty list is the plain
 // window; picking a colour that is already here takes it out, so one can go without clearing the rest.
 std::vector<COLORREF> g_keyColours;
+// Sin colores keyed el motor va en hosting con ventana (ahi el arrastre de archivos funciona);
+// con transparencia obliga a composicion. Cambiar de modo recrea el motor y recarga la pagina,
+// conservando el sitio y el zoom que tenia.
+std::wstring g_pendingTarget;  // lo que hay que cargar al recrear el motor
+bool g_pendingSet = false;     // ... y si hay algo pendiente (la barra es un pendiente vacio)
+double g_restoreZoom = 1.0;    // ... y el zoom que tenia la pagina
 // Each colour costs a handful of filter primitives and the script travels to the page as one string:
 // past this many the filter stops being cheap, and a page never needs more.
 constexpr size_t kKeyColourMax = 12;
@@ -880,8 +886,15 @@ void RunColourKey() {
   g_webview->ExecuteScript(script.c_str(), nullptr);
 }
 
+void SwitchEngineMode();  // recrea el motor al activar o quitar la transparencia
+
 void ClearColourKey() {
+  const bool wasKeyed = !g_keyColours.empty();
   g_keyColours.clear();
+  if (wasKeyed) {
+    SwitchEngineMode();  // sin colores vuelve el hosting con ventana
+    return;
+  }
   if (g_webview) {
     g_webview->ExecuteScript(
         L"if (window.__tinyKeyRestore) { window.__tinyKeyRestore(); }", nullptr);
@@ -892,6 +905,7 @@ void ClearColourKey() {
 // A second pickup adds to the key instead of replacing it, and picking a colour that is already
 // keyed takes it out: that is the only way to drop one without clearing the others.
 void ApplyColourKey(COLORREF colour) {
+  const bool wasEmpty = g_keyColours.empty();
   const auto known = std::find(g_keyColours.begin(), g_keyColours.end(), colour);
   if (known != g_keyColours.end()) {
     g_keyColours.erase(known);
@@ -900,6 +914,10 @@ void ApplyColourKey(COLORREF colour) {
   }
   if (g_keyColours.empty()) {
     ClearColourKey();
+    return;
+  }
+  if (wasEmpty) {
+    SwitchEngineMode();  // la transparencia necesita composicion: se recrea y recarga
     return;
   }
   SetEngineBackground(true);
@@ -943,6 +961,7 @@ void TogglePicking() {
   // cursor moved by something else would leave the preview showing an old colour.
   SetTimer(g_window, kPickTimer, 40, nullptr);
 }
+void SwitchEngineMode();        // recrea el motor al activar o quitar la transparencia
 void LoadSettings();            // defined with the other instance-wide helpers below
 void ApplyTrayMode();           // the icon follows this copy and the app-wide switch
 void UpdateTrayTip();
@@ -3681,10 +3700,120 @@ bool StartComposition() {
   return true;
 }
 
+// Lo comun a los dos motores: enganchar la pagina, sus eventos y lo que haya que cargar.
+void AttachWebView() {
+  g_controller->get_CoreWebView2(&g_webview);
+  // En hosting con ventana tambien se acepta un arrastre externo; en composicion el motor lo
+  // rechaza igual (bug abierto de WebView2), pero la propiedad se pone en los dos.
+  ComPtr<ICoreWebView2Controller4> controller4;
+  if (SUCCEEDED(g_controller.As(&controller4)) && controller4) {
+    controller4->put_AllowExternalDrop(TRUE);
+  }
+
+  RECT bounds = {};
+  GetClientRect(g_window, &bounds);
+  g_controller->put_Bounds(bounds);
+  g_controller->put_IsVisible(TRUE);
+  if (g_composition) {
+    // El arbol al que pinta el motor. Solo el modo de composicion lo necesita.
+    if (!StartComposition()) {
+      PostMessageW(g_window, WM_CLOSE, 0, 0);
+      return;
+    }
+    EventRegistrationToken cursorToken = {};
+    g_composition->add_CursorChanged(
+        Callback<ICoreWebView2CursorChangedEventHandler>(
+            [](ICoreWebView2CompositionController* sender, IUnknown*) -> HRESULT {
+              HCURSOR cursor = nullptr;
+              if (sender && SUCCEEDED(sender->get_Cursor(&cursor)) && cursor) {
+                g_pageCursor = cursor;
+              }
+              return S_OK;
+            })
+            .Get(),
+        &cursorToken);
+  }
+  // Con ventana el fondo transparente no hace nada: siempre opaco.
+  SetEngineBackground(g_composition && !g_keyColours.empty());
+  g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+
+  EventRegistrationToken messageToken = {};
+  g_webview->add_WebMessageReceived(
+      Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+          [](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+            LPWSTR raw = nullptr;
+            if (SUCCEEDED(args->TryGetWebMessageAsString(&raw)) && raw) {
+              OnBarCommand(raw);
+              CoTaskMemFree(raw);
+            }
+            return S_OK;
+          })
+          .Get(),
+      &messageToken);
+
+  EventRegistrationToken blankToken = {};
+  g_webview->add_NewWindowRequested(
+      Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+          [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+            LPWSTR uri = nullptr;
+            if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+              Navigate(uri);
+              CoTaskMemFree(uri);
+            }
+            args->put_Handled(TRUE);
+            return S_OK;
+          })
+          .Get(),
+      &blankToken);
+
+  EventRegistrationToken navigatedToken = {};
+  g_webview->add_NavigationCompleted(
+      Callback<ICoreWebView2NavigationCompletedEventHandler>(
+          [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+            if (!g_showingBar && sender) {
+              LPWSTR source = nullptr;
+              if (SUCCEEDED(sender->get_Source(&source)) && source) {
+                g_url = source;
+                CoTaskMemFree(source);
+              }
+            }
+            RunColourKey();  // un documento nuevo empieza sin filtro
+            StartFit();
+            if (g_restoreZoom > 0.0 && g_controller) {
+              // El zoom que tenia la pagina antes de recrear el motor: el ajuste lo recalcula
+              // igual, pero si se habia cambiado a mano no se pierde.
+              g_controller->put_ZoomFactor(g_restoreZoom);
+              g_restoreZoom = 1.0;
+            }
+            return S_OK;
+          })
+          .Get(),
+      &navigatedToken);
+
+  g_webview->AddScriptToExecuteOnDocumentCreated(kPageScript, nullptr);
+  if (g_pendingSet) {
+    g_pendingSet = false;
+    const std::wstring target = g_pendingTarget;
+    g_pendingTarget.clear();
+    if (target.empty()) {
+      ShowBar();
+    } else {
+      Navigate(target);
+    }
+    return;
+  }
+  if (g_startTarget.empty()) {
+    ShowBar();
+  } else {
+    const int stateZoom = g_stateZoom;  // Navigate lo pierde
+    Navigate(g_startTarget);
+    g_stateZoom = stateZoom;  // ... y un .to conserva el suyo
+  }
+}
+
 void CreateWebView() {
   const std::wstring folder = UserDataFolder();
   if (kCrispText) {
-    // Set before the engine starts: the browser process inherits it and reads the arguments.
     SetEnvironmentVariableW(kCrispArgsVar, kCrispArgs);
   }
   const HRESULT started = CreateCoreWebView2EnvironmentWithOptions(
@@ -3693,13 +3822,38 @@ void CreateWebView() {
           [](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
             if (FAILED(result) || !environment) {
               if (result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-                ReportMissingRuntime();  // only this code means the runtime really is absent
+                ReportMissingRuntime();  // solo este codigo significa que falta el runtime
               } else {
                 ReportFailure(L"CreateCoreWebView2EnvironmentWithOptions", result);
               }
               PostMessageW(g_window, WM_CLOSE, 0, 0);
               return S_OK;
             }
+            if (g_keyColours.empty()) {
+              // Hosting con ventana: el motor crea su propia ventana hija y recibe el raton, el
+              // teclado y los arrastres de archivos sin intermediarios. Es el modo normal.
+              const HRESULT created = environment->CreateCoreWebView2Controller(
+                  g_window,
+                  Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                      [](HRESULT controllerResult,
+                         ICoreWebView2Controller* controller) -> HRESULT {
+                        if (FAILED(controllerResult) || !controller) {
+                          ReportFailure(L"CreateCoreWebView2Controller", controllerResult);
+                          PostMessageW(g_window, WM_CLOSE, 0, 0);
+                          return S_OK;
+                        }
+                        g_controller = controller;
+                        AttachWebView();
+                        return S_OK;
+                      })
+                      .Get());
+              if (FAILED(created)) {
+                ReportFailure(L"CreateCoreWebView2Controller", created);
+                PostMessageW(g_window, WM_CLOSE, 0, 0);
+              }
+              return S_OK;
+            }
+
             ComPtr<ICoreWebView2Environment3> environment3;
             if (FAILED(environment->QueryInterface(IID_PPV_ARGS(&environment3))) || !environment3) {
               ReportFailure(L"ICoreWebView2Environment3", E_NOINTERFACE);
@@ -3717,109 +3871,15 @@ void CreateWebView() {
                         return S_OK;
                       }
                       g_composition = composition;
-                      // The composition controller also answers for the controller API -- bounds,
-                      // visibility, zoom, focus -- so the rest of the file needs no changes.
+                      // El controlador de composicion tambien responde a la API del controlador
+                      // -- bounds, visibilidad, zoom, foco -- asi que el resto del archivo no cambia.
                       if (FAILED(composition->QueryInterface(IID_PPV_ARGS(&g_controller))) ||
                           !g_controller) {
                         ReportFailure(L"ICoreWebView2Controller", (HRESULT)E_NOINTERFACE);
                         PostMessageW(g_window, WM_CLOSE, 0, 0);
                         return S_OK;
                       }
-                      g_controller->get_CoreWebView2(&g_webview);
-
-                      RECT bounds = {};
-                      GetClientRect(g_window, &bounds);
-                      g_controller->put_Bounds(bounds);
-                      g_controller->put_IsVisible(TRUE);
-                      // The tree the engine paints into. Everything visible in this window comes
-                      // from here; the window itself has no GDI surface.
-                      if (!StartComposition()) {
-                        PostMessageW(g_window, WM_CLOSE, 0, 0);
-                        return S_OK;
-                      }
-                      EventRegistrationToken cursorToken = {};
-                      g_composition->add_CursorChanged(
-                          Callback<ICoreWebView2CursorChangedEventHandler>(
-                              [](ICoreWebView2CompositionController* sender,
-                                 IUnknown*) -> HRESULT {
-                                HCURSOR cursor = nullptr;
-                                if (sender && SUCCEEDED(sender->get_Cursor(&cursor)) && cursor) {
-                                  g_pageCursor = cursor;
-                                }
-                                return S_OK;
-                              })
-                              .Get(),
-                          &cursorToken);
-                      // The engine paints its own background before the content catches up, and by
-                      // default that is white: growing the window showed a pale strip on the freshly
-                      // exposed edge. Same colour as the window, so a resize looks even, and
-                      // transparent when a .to brought a colour already keyed in.
-                      SetEngineBackground(!g_keyColours.empty());
-                      // The engine has to be told, because the window's own focus notice arrives
-                      // before the controller exists: without this the address field is drawn
-                      // focused but the keystrokes go nowhere until you click the window.
-                      g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
-
-                      EventRegistrationToken messageToken = {};
-                      g_webview->add_WebMessageReceived(
-                          Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-                              [](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-                                LPWSTR raw = nullptr;
-                                if (SUCCEEDED(args->TryGetWebMessageAsString(&raw)) && raw) {
-                                  OnBarCommand(raw);
-                                  CoTaskMemFree(raw);
-                                }
-                                return S_OK;
-                              })
-                              .Get(),
-                          &messageToken);
-
-                      EventRegistrationToken blankToken = {};
-                      g_webview->add_NewWindowRequested(
-                          Callback<ICoreWebView2NewWindowRequestedEventHandler>(
-                              [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
-                                LPWSTR uri = nullptr;
-                                if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
-                                  Navigate(uri);
-                                  CoTaskMemFree(uri);
-                                }
-                                args->put_Handled(TRUE);
-                                return S_OK;
-                              })
-                              .Get(),
-                          &blankToken);
-
-                      EventRegistrationToken navigatedToken = {};
-                      g_webview->add_NavigationCompleted(
-                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                              [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
-                                // What the page really is, taken from the engine instead of from
-                                // our own calls, so a link click also updates it. The bar's own
-                                // document is skipped: it would otherwise erase the page's URL.
-                                if (!g_showingBar && sender) {
-                                  LPWSTR source = nullptr;
-                                  if (SUCCEEDED(sender->get_Source(&source)) && source) {
-                                    g_url = source;
-                                    CoTaskMemFree(source);
-                                  }
-                                }
-                                // Pages keep widening as they load, so the fit is measured
-                                // in a few passes instead of once.
-                                RunColourKey();  // a new document starts without the key
-                                StartFit();
-                                return S_OK;
-                              })
-                              .Get(),
-                          &navigatedToken);
-
-                      g_webview->AddScriptToExecuteOnDocumentCreated(kPageScript, nullptr);
-                      if (g_startTarget.empty()) {
-                        ShowBar();
-                      } else {
-                        const int stateZoom = g_stateZoom;  // Navigate drops it
-                        Navigate(g_startTarget);
-                        g_stateZoom = stateZoom;  // ... and a .to keeps its own
-                      }
+                      AttachWebView();
                       return S_OK;
                     })
                     .Get());
@@ -3829,12 +3889,53 @@ void CreateWebView() {
 
   if (FAILED(started)) {
     if (started == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-      ReportMissingRuntime();  // only this code means the runtime really is absent
+      ReportMissingRuntime();  // solo este codigo significa que falta el runtime
     } else {
       ReportFailure(L"CreateCoreWebView2EnvironmentWithOptions", started);
     }
     PostMessageW(g_window, WM_CLOSE, 0, 0);
   }
+}
+
+// El estilo de la ventana acompana al motor: la transparencia necesita una ventana sin superficie
+// propia y el modo normal necesita lo contrario. Windows lee el estilo al mostrar la ventana, asi
+// que el cambio en caliente lleva un ciclo de ocultar/mostrar.
+void ApplyEngineStyle() {
+  if (!g_window) {
+    return;
+  }
+  const LONG_PTR style = GetWindowLongPtrW(g_window, GWL_EXSTYLE);
+  const LONG_PTR wanted = g_keyColours.empty() ? (style & ~WS_EX_NOREDIRECTIONBITMAP)
+                                               : (style | WS_EX_NOREDIRECTIONBITMAP);
+  if (wanted == style) {
+    return;
+  }
+  SetWindowLongPtrW(g_window, GWL_EXSTYLE, wanted);
+  if (IsWindowVisible(g_window)) {
+    ShowWindow(g_window, SW_HIDE);
+    ShowWindow(g_window, SW_SHOWNOACTIVATE);
+  }
+}
+
+// Cambiar de hosting es destruir el motor y crear el otro: la pagina vive dentro del motor, asi que
+// se recarga. La ventana no se toca (sitio y tamano se quedan) y el zoom de la pagina se conserva.
+void SwitchEngineMode() {
+  if (!g_window || !g_controller) {
+    return;
+  }
+  g_controller->get_ZoomFactor(&g_restoreZoom);
+  g_pendingTarget = g_url;
+  g_pendingSet = true;
+  g_webview.Reset();
+  g_controller->Close();
+  g_controller.Reset();
+  g_composition.Reset();
+  g_dcompRoot.Reset();
+  g_dcompTarget.Reset();
+  g_dcompDevice.Reset();
+  g_pageCursor = nullptr;
+  ApplyEngineStyle();
+  CreateWebView();
 }
 
 // Without a child window there is nobody else to deliver pointer input: every mouse message is
@@ -4194,8 +4295,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // tree, alpha included. Without this the page could never be see-through to the desktop.
   // WS_EX_TOOLWINDOW is what keeps the button out of the taskbar (and out of Alt+Tab): the same
   // window, the same engine, only without a shell entry of its own.
-  const DWORD exStyle =
-      WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP | (g_trayOnly ? WS_EX_TOOLWINDOW : 0);
+  // La transparencia necesita una ventana sin superficie propia (lo que se ve es el arbol de
+  // composicion); el modo normal no, porque el motor pinta en su ventana hija.
+  const DWORD exStyle = WS_EX_TOPMOST | (g_trayOnly ? WS_EX_TOOLWINDOW : 0) |
+                        (g_keyColours.empty() ? 0 : WS_EX_NOREDIRECTIONBITMAP);
   g_window = CreateWindowExW(
       exStyle, kWindowClass, kTitle, WS_POPUP,
       x, y, width, height,

@@ -9,6 +9,12 @@
 - **Seleccionar texto arrastrando vuelve a funcionar.** El motor recibía los movimientos del ratón sin
   el botón pulsado y los tomaba por un simple hover; ahora cada evento lleva el estado real de los
   botones (y `Shift`/`Ctrl`, para extender una selección).
+- **Arrastrar archivos a la página vuelve a funcionar en el modo normal.** Mientras no haya
+  transparencia activa, la ventana usa el motor con ventana, que arrastra archivos de forma nativa; al
+  elegir un color con la pipeta cambia al motor de composición, el único que puede hacer transparente
+  un color. Ese cambio recarga la página de esa ventana y conserva su sitio, su tamaño y el zoom. En
+  modo transparencia el arrastre de archivos sigue sin funcionar: es una limitación del motor de
+  WebView2 en composición (issue #5124), no de la app.
 - **Quitar ya no falla.** La desinstalación borra también `tinybrowser.ini` de la carpeta instalada: sin
   ese archivo la carpeta no quedaba vacía y Windows se negaba a eliminarla. Si otra copia está corriendo
   desde el exe instalado, se aparta a `%TEMP%` como ya se hacía con la propia.
