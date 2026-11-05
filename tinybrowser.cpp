@@ -3205,6 +3205,22 @@ void SetKeyDefault(HKEY root, const std::wstring& subkey, const std::wstring& va
   RegCloseKey(key);
 }
 
+// Whether the default value already holds what is about to be written. Every window start runs the
+// association check, so an unchanged registry must not look like a change to the shell.
+bool KeyDefaultIs(HKEY root, const std::wstring& subkey, const std::wstring& value) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(root, subkey.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  wchar_t current[MAX_PATH * 2] = {};
+  DWORD bytes = sizeof(current);
+  DWORD type = 0;
+  const LSTATUS status = RegQueryValueExW(key, nullptr, nullptr, &type,
+                                          reinterpret_cast<LPBYTE>(current), &bytes);
+  RegCloseKey(key);
+  return status == ERROR_SUCCESS && type == REG_SZ && value == current;
+}
+
 void SetKeyString(HKEY root, const std::wstring& subkey, const wchar_t* name,
                   const std::wstring& value) {
   HKEY key = nullptr;
@@ -3287,17 +3303,34 @@ bool EnsureAssociation() {
     return false;
   }
   const std::wstring classes = L"Software\\Classes\\";
-  SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
-  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, TINY_TYPE_WIDE);
   // Resource id 2, the document icon: a .to has to look like a file, not like the browser that
   // opens it.
-  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon",
-                L"\"" + executable + L"\",-2");
-  SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command",
-                L"\"" + executable + L"\" \"%1\"");
+  const std::wstring icon = L"\"" + executable + L"\",-2";
+  const std::wstring command = L"\"" + executable + L"\" \"%1\"";
+  // Only real changes notify the shell. Every start and every duplicate runs this check, and an
+  // ASSOCCHANGED on each one makes Explorer reload icons, so the desktop flickers as with F5.
+  bool changed = false;
+  if (!KeyDefaultIs(HKEY_CURRENT_USER, classes + L".to", kStateProgId)) {
+    SetKeyDefault(HKEY_CURRENT_USER, classes + L".to", kStateProgId);
+    changed = true;
+  }
+  if (!KeyDefaultIs(HKEY_CURRENT_USER, classes + kStateProgId, TINY_TYPE_WIDE)) {
+    SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId, TINY_TYPE_WIDE);
+    changed = true;
+  }
+  if (!KeyDefaultIs(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon", icon)) {
+    SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\DefaultIcon", icon);
+    changed = true;
+  }
+  if (!KeyDefaultIs(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command", command)) {
+    SetKeyDefault(HKEY_CURRENT_USER, classes + kStateProgId + L"\\shell\\open\\command", command);
+    changed = true;
+  }
   // Nothing is deleted here for the old id: "tinybrowser.to" and "TinyBrowser.to" are the same key,
   // so a sweep would erase the ProgId (and its open command) that was just written.
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  if (changed) {
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  }
   return true;
 }
 

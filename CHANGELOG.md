@@ -1,5 +1,12 @@
 # Novedades
 
+## 1.1.4 - 2026-11-05
+
+- **Los archivos del escritorio ya no parpadean al abrir una ventana nueva o duplicar.** Cada arranque
+  revisaba la asociación de `.to` y avisaba a Windows aunque no hubiera cambiado nada, y Explorer
+  recargaba iconos como si se pulsara F5. Ahora solo avisa cuando la asociación realmente cambia.
+- La versión sube a **1.1.4**.
+
 ## 1.1.2 - 2026-11-04
 
 - **La ventana se queda encima de la barra de tareas.** Al hacer clic en la barra, al hacer clic en el
