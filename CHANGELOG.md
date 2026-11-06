@@ -1,5 +1,14 @@
 # Novedades
 
+## 1.1.5 - 2026-11-05
+
+- **`Ctrl+Alt+T` abre una ventana nueva aunque tiny no esté abierto.** Instalar deja un proceso
+  invisible que arranca con Windows y espera ese atajo, sin ventana, sin motor y sin tocar la página
+  que tengas delante. El atajo se registra como atajo global del sistema: si otro programa ya lo tiene
+  tomado, gana ese y tiny no se queda con las teclas. Desinstalar lo apaga y borra el arranque
+  automático junto con todo lo demás, así que no hay nada que configurar aparte.
+- La versión sube a **1.1.5**.
+
 ## 1.1.4 - 2026-11-05
 
 - **Los archivos del escritorio ya no parpadean al abrir una ventana nueva o duplicar.** Cada arranque

@@ -3072,7 +3072,128 @@ bool CopyIntoInstallFolder(DWORD* error) {
 void WriteUninstallEntry();     // defined with the registry helpers below
 void RemoveUninstallEntry();    // ... and so is this one
 
+// Ctrl+Alt+T has to answer with no window open, so it cannot be one of the chords the app registers
+// from a window: those live only as long as the instance does. A hidden listener process owns it
+// instead, started at login through a value under Run and taken down by the uninstaller.
+//
+// RegisterHotKey rather than the low-level hook the other chords use: the hook sits in front of every
+// keystroke of the session, and the one thing a global chord must not do is slow the rest of the
+// keyboard down. The call also answers whether another program already owns the chord, instead of
+// eating the keys silently.
+constexpr wchar_t kListenerClass[] = L"TinyBrowserListener";
+constexpr wchar_t kListenerOwner[] = L"TinyBrowserListenerOwner";
+constexpr wchar_t kListenerRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kListenerRunValue[] = L"TinyBrowserListener";
+constexpr int kListenerHotkey = 1;  // the only message this window answers
+constexpr UINT kListenerKey = L'T';
+
+LRESULT CALLBACK ListenerProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_HOTKEY && (int)wparam == kListenerHotkey) {
+    LaunchNewWindow();
+    return 0;
+  }
+  // The uninstaller asks for this. Closing the window ends the loop below and the process with it.
+  if (message == WM_CLOSE || message == WM_DESTROY) {
+    PostQuitMessage(0);
+    return 0;
+  }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
+
+// The hidden half of the app: no engine, no page, no window on screen -- one hotkey and the window
+// that receives it. It waits in about 10 MB; the engine an open window loads is the expensive part,
+// and this process never touches it.
+int RunListener() {
+  // One listener per session. A second one would fail to register the chord and leave anyway; the
+  // name makes that answer immediate instead of two processes racing for the same keys.
+  HANDLE owner = CreateMutexW(nullptr, FALSE, kListenerOwner);
+  if (!owner) {
+    return 1;
+  }
+  if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(owner);
+    return 0;
+  }
+  WNDCLASSEXW windowClass = {};
+  windowClass.cbSize = sizeof(windowClass);
+  windowClass.lpfnWndProc = ListenerProc;
+  windowClass.hInstance = GetModuleHandleW(nullptr);
+  windowClass.lpszClassName = kListenerClass;
+  if (!RegisterClassExW(&windowClass)) {
+    CloseHandle(owner);
+    return 1;
+  }
+  // Never shown, and a normal top-level window rather than a message-only one: the uninstaller has
+  // to find it by class name to ask it to quit, and message-only windows are not enumerable.
+  HWND window = CreateWindowExW(WS_EX_TOOLWINDOW, kListenerClass, kTitle, WS_POPUP, 0, 0, 0, 0,
+                                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!window) {
+    CloseHandle(owner);
+    return 1;
+  }
+  // MOD_NOREPEAT: holding the keys opens one window, not one per repeat. A chord another program
+  // already owns fails here, and the listener goes away rather than taking the keys from anyone.
+  if (!RegisterHotKey(window, kListenerHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, kListenerKey)) {
+    DestroyWindow(window);
+    CloseHandle(owner);
+    return 0;
+  }
+  MSG message = {};
+  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+    TranslateMessage(&message);
+    DispatchMessageW(&message);
+  }
+  UnregisterHotKey(window, kListenerHotkey);
+  CloseHandle(owner);
+  return 0;
+}
+
+// The login half. It points at the installed copy because that is the one the user asked to have
+// installed: updating rewrites the value, so a moved folder never leaves a dead path behind.
+void WriteListenerRunValue(bool present) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kListenerRunKey, 0, nullptr, 0, KEY_WRITE, nullptr, &key,
+                      nullptr) != ERROR_SUCCESS) {
+    return;
+  }
+  if (present) {
+    const std::wstring command = L"\"" + InstalledExe() + L"\" --listener";
+    RegSetValueExW(key, kListenerRunValue, 0, REG_SZ,
+                   reinterpret_cast<const BYTE*>(command.c_str()),
+                   (DWORD)((command.size() + 1) * sizeof(wchar_t)));
+  } else {
+    RegDeleteValueW(key, kListenerRunValue);
+  }
+  RegCloseKey(key);
+}
+
+void LaunchListener() {
+  const std::wstring exe = InstalledExe();
+  if (exe.empty()) {
+    return;
+  }
+  // A listener already running makes this copy leave on the mutex, which is the point: the chord is
+  // owned once, by whichever copy got there first.
+  ShellExecuteW(nullptr, L"open", exe.c_str(), L"--listener", nullptr, SW_HIDE);
+}
+
+// An update and an uninstall both need the listener gone first: it runs from the copy that is about
+// to be replaced or deleted, and a running image cannot be deleted.
+void StopListener() {
+  const HWND window = FindWindowW(kListenerClass, nullptr);
+  if (!window) {
+    return;
+  }
+  PostMessageW(window, WM_CLOSE, 0, 0);
+  for (int attempt = 0; attempt < 40 && FindWindowW(kListenerClass, nullptr); ++attempt) {
+    Sleep(25);
+  }
+}
+
 void DoInstall() {
+  // The listener runs from the very copy this install is about to overwrite, so it goes down first:
+  // that is what keeps the file free, and it stops the chord from staying in a copy parked in %TEMP%.
+  StopListener();
   DWORD error = ERROR_SUCCESS;
   if (!CopyIntoInstallFolder(&error)) {
     wchar_t text[256] = {};
@@ -3087,11 +3208,19 @@ void DoInstall() {
     CreateDesktopShortcut();  // a shortcut already on the desktop follows the copy, not the old path
   }
   WriteUninstallEntry();  // Settings shows the version that was just written
+  // The chord answers from the next login through this value, and right now through the copy it
+  // starts. Both are written here so installing is the only thing the user ever does.
+  WriteListenerRunValue(true);
+  LaunchListener();
 }
 
 // Uninstalling takes away everything installing put there. The WebView2 profile stays: it is the
 // logins and cookies of every page you opened, not part of the program.
 void DoUninstall() {
+  // Before anything else: nothing should answer Ctrl+Alt+T once the app is gone, and the copy the
+  // listener runs from is the one deleted below.
+  WriteListenerRunValue(false);
+  StopListener();
   SetPathEntry(InstallFolder(), false);
   RemoveDesktopShortcut();
   RemoveAssociation();
@@ -4204,6 +4333,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // What Settings > Installed apps runs: no window, no engine, and nothing restated on the way out.
   if (lstrcmpiW(arguments.c_str(), L"--uninstall") == 0) {
     return UninstallFromCommandLine();
+  }
+  // The login entry and the install panel both run this one: no window, no engine, no options read.
+  if (lstrcmpiW(arguments.c_str(), L"--listener") == 0) {
+    return RunListener();
   }
   LoadSettings();
   // The association records the path of the exe that wrote it, so it is restated on every start:
