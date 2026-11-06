@@ -1,5 +1,16 @@
 # Novedades
 
+## 1.1.6 - 2026-11-05
+
+- **`Ctrl+Alt+S` ya no te saca de la página.** En una ventana con página cargada abre una tira de una
+  sola línea, la pantalla de inicio comprimida, flotando 4 px por encima de la ventana: algo más
+  estrecha que ella, encima de las demás ventanas y sin tocar el tamaño ni las colisiones. Las
+  opciones que no caben se recorren en horizontal, con la rueda. El `Ctrl+Alt+S` la muestra y la
+  oculta como un interruptor, y en cuanto el ratón no está encima baja a media transparencia, con una
+  transición corta, y vuelve a opaca al pasar por ella. En una ventana sin página, el atajo sigue
+  abriendo la pantalla de inicio de siempre.
+- La versión sube a **1.1.6**.
+
 ## 1.1.5 - 2026-11-05
 
 - **`Ctrl+Alt+T` abre una ventana nueva aunque tiny no esté abierto.** Instalar deja un proceso

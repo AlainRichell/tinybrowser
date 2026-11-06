@@ -154,6 +154,9 @@ ComPtr<IDCompositionVisual> g_dcompRoot;
 HCURSOR g_pageCursor = nullptr;  // what the page wants under the pointer (links, text fields)
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
+// One browser process serves both engines: the window's and the strip's. The environment is kept
+// from the first creation and reused, instead of starting a second one on the same profile.
+ComPtr<ICoreWebView2Environment> g_environment;
 // Resizing and moving the window are driven from HERE, never from the page. Over a scrollbar the
 // engine hands the drag to the scrollbar and the page stops seeing the mouse entirely (measured:
 // no movement arrived, and not even the hover cursor), so a page-side resize cannot cover that
@@ -170,6 +173,8 @@ bool g_dragActive = false;     // a hook-driven drag is in progress
 bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
 bool g_setupPanel = false;     // one-shot: the next bar comes up with the setup panel open
+bool g_settingsPanel = false;  // ... and the same for the options panel, opened from the strip
+bool g_commandsPanel = false;  // ... and for the help panel, likewise
 // Ctrl+Alt+W hid this copy, so the next press brings it back instead of hiding another one. Each
 // copy keeps its own answer and the chord owner asks for it; nothing is shared between processes.
 bool g_hiddenByW = false;
@@ -247,7 +252,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
 <div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
 <div id="brand">tinybrowser 2026</div>
-<div id="commands" hidden>
+<div id="commands"%COMMANDS_HIDDEN%>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
 <div><span class="k">Ctrl+Alt+D</span> duplicar</div>
 <div><span class="k">Ctrl+Alt+G</span> guardar / cargar</div>
@@ -260,7 +265,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div id="closepanel">clic para cerrar</div>
 </div>
 )HTML" LR"HTML(
-<div id="settings" hidden>
+<div id="settings"%SETTINGS_HIDDEN%>
 <div class="title">Opciones</div>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
@@ -565,6 +570,10 @@ void RemoveDesktopShortcut();
 void RemoveAssociation();
 void DoInstall();
 void DoUninstall();
+void ToggleStartSurface();     // Ctrl+Alt+S: the strip over a page, the start page without one
+void HideStrip();              // the strip in its own window, shared with WindowProc
+void RepositionStripIfShown(); // the strip follows its window, edge and gap included
+void DestroyStrip();
 
 void ShowBar() {
   if (!g_webview) {
@@ -596,6 +605,11 @@ void ShowBar() {
   const SetupInfo setup = DescribeSetup();
   ReplaceToken(&html, L"%SETUP_HIDDEN%", g_setupPanel ? L"" : L" hidden");
   g_setupPanel = false;
+  // Opened from the strip, which has no room for a panel: the bar comes up with it already open.
+  ReplaceToken(&html, L"%SETTINGS_HIDDEN%", g_settingsPanel ? L"" : L" hidden");
+  g_settingsPanel = false;
+  ReplaceToken(&html, L"%COMMANDS_HIDDEN%", g_commandsPanel ? L"" : L" hidden");
+  g_commandsPanel = false;
   ReplaceToken(&html, L"%SETUP_ACTION%", setup.action);
   ReplaceToken(&html, L"%SETUP_STATUS%", setup.note);
   ReplaceToken(&html, L"%SETUP_REMOVE_DISABLED%", setup.installed ? L"" : L" disabled");
@@ -1022,7 +1036,7 @@ void ShowInstance(bool focus) {
 
 void HandleHotkey(UINT id, LPARAM data) {
   if (id == kHotkeyBar) {
-    ShowBar();
+    ToggleStartSurface();
   } else if (id == kHotkeyQuit) {
     PostMessageW(g_window, WM_CLOSE, 0, 0);
   } else if (id == kHotkeyDuplicate) {
@@ -2308,7 +2322,7 @@ void OnBarCommand(const std::wstring& message) {
       ShowBar();
       break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
-    case L'S': ShowBar(); break;
+    case L'S': ToggleStartSurface(); break;
     case L'M': {
       const wchar_t* rest = message.c_str() + 1;
       wchar_t* end = nullptr;
@@ -3817,7 +3831,11 @@ bool CreateD3DDevice(ComPtr<ID3D11Device>* device) {
 
 // Builds the tree the engine paints into. Every step reports its own failing call: a silent
 // failure here is a window that shows nothing at all, which is impossible to diagnose from outside.
-bool StartComposition() {
+// It is shared by the window and by the floating strip, which is a second engine with a tree of its
+// own.
+bool BuildCompositionTree(HWND window, ICoreWebView2CompositionController* composition,
+                          ComPtr<IDCompositionDevice>* device, ComPtr<IDCompositionTarget>* target,
+                          ComPtr<IDCompositionVisual>* visual) {
   ComPtr<ID3D11Device> d3dDevice;
   if (!CreateD3DDevice(&d3dDevice)) {
     return false;
@@ -3829,37 +3847,42 @@ bool StartComposition() {
     ReportFailure(L"IDXGIDevice", result);
     return false;
   }
-  result = DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(&g_dcompDevice));
-  if (FAILED(result) || !g_dcompDevice) {
+  result = DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(device->ReleaseAndGetAddressOf()));
+  if (FAILED(result) || !*device) {
     ReportFailure(L"DCompositionCreateDevice", result);
     return false;
   }
-  result = g_dcompDevice->CreateTargetForHwnd(g_window, TRUE, &g_dcompTarget);
-  if (FAILED(result) || !g_dcompTarget) {
+  result = (*device)->CreateTargetForHwnd(window, TRUE, target->ReleaseAndGetAddressOf());
+  if (FAILED(result) || !*target) {
     ReportFailure(L"IDCompositionDevice::CreateTargetForHwnd", result);
     return false;
   }
-  result = g_dcompDevice->CreateVisual(&g_dcompRoot);
-  if (FAILED(result) || !g_dcompRoot) {
+  result = (*device)->CreateVisual(visual->ReleaseAndGetAddressOf());
+  if (FAILED(result) || !*visual) {
     ReportFailure(L"IDCompositionDevice::CreateVisual", result);
     return false;
   }
-  result = g_dcompTarget->SetRoot(g_dcompRoot.Get());
+  result = (*target)->SetRoot(visual->Get());
   if (FAILED(result)) {
     ReportFailure(L"IDCompositionTarget::SetRoot", result);
     return false;
   }
-  result = g_composition->put_RootVisualTarget(g_dcompRoot.Get());
+  result = composition->put_RootVisualTarget(visual->Get());
   if (FAILED(result)) {
     ReportFailure(L"put_RootVisualTarget", result);
     return false;
   }
-  result = g_dcompDevice->Commit();
+  result = (*device)->Commit();
   if (FAILED(result)) {
     ReportFailure(L"IDCompositionDevice::Commit", result);
     return false;
   }
   return true;
+}
+
+bool StartComposition() {
+  return BuildCompositionTree(g_window, g_composition.Get(), &g_dcompDevice, &g_dcompTarget,
+                              &g_dcompRoot);
 }
 
 // Lo comun a los dos motores: enganchar la pagina, sus eventos y lo que haya que cargar.
@@ -3991,6 +4014,7 @@ void CreateWebView() {
               PostMessageW(g_window, WM_CLOSE, 0, 0);
               return S_OK;
             }
+            g_environment = environment;  // the strip reuses it rather than opening a second one
             if (g_keyColours.empty()) {
               // Hosting con ventana: el motor crea su propia ventana hija y recibe el raton, el
               // teclado y los arrastres de archivos sin intermediarios. Es el modo normal.
@@ -4102,8 +4126,11 @@ void SwitchEngineMode() {
 
 // Without a child window there is nobody else to deliver pointer input: every mouse message is
 // translated into the engine's own vocabulary, in client coordinates.
-void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
-  if (!g_composition) {
+// Pointer input in composition hosting has to be handed to the engine by the host: there is no
+// child HWND to receive it. Shared by the window and by the strip, each with its own controller.
+void SendMouseTo(ICoreWebView2CompositionController* composition, HWND window, UINT message,
+                 WPARAM wparam, LPARAM lparam) {
+  if (!composition) {
     return;
   }
   POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -4143,7 +4170,7 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
       kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL;
       data = (UINT32)(SHORT)HIWORD(wparam);
       POINT screen = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      ScreenToClient(g_window, &screen);
+      ScreenToClient(window, &screen);
       point = screen;
       break;
     }
@@ -4172,7 +4199,11 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
   if (wparam & MK_CONTROL) {
     keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL;
   }
-  g_composition->SendMouseInput(kind, (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)keys, data, point);
+  composition->SendMouseInput(kind, (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)keys, data, point);
+}
+
+void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
+  SendMouseTo(g_composition.Get(), g_window, message, wparam, lparam);
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -4223,6 +4254,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         }
       }
       return 0;
+    case WM_SHOWWINDOW:
+      // A hidden window takes its strip with it: the strip belongs to that window, it is not a
+      // window of its own.
+      if (!wparam) {
+        HideStrip();
+      }
+      break;
+    case WM_WINDOWPOSCHANGED:
+      RepositionStripIfShown();
+      break;
     case kHotkeyMessage:
       HandleHotkey((UINT)wparam, lparam);
       return 0;
@@ -4285,6 +4326,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       }
       return 0;
     case WM_DESTROY:
+      DestroyStrip();  // the second engine goes with the window it belongs to
       g_heldTrayIcon = RemoveTrayIcon();
       g_webview.Reset();
       if (g_controller) {
@@ -4320,6 +4362,441 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
   }
   // Anything not handled above, and WM_NCCALCSIZE when wparam is not TRUE, is default work.
   return DefWindowProcW(window, message, wparam, lparam);
+}
+
+// -------------------------------------------------------------------------------------------------
+// The floating strip: what Ctrl+Alt+S opens over a window that already has a page. It is the start
+// panel in a single line, living in a window of its own sitting a few pixels above the one that
+// asked for it, so the page underneath keeps its place and its size. It is the second engine of the
+// process, hosted with composition and a transparent background: that is what lets the line drop to
+// half strength when the pointer is elsewhere, with the desktop showing through it.
+// -------------------------------------------------------------------------------------------------
+constexpr wchar_t kStripClass[] = L"TinyBrowserStrip";
+constexpr int kStripHeight = 26;
+constexpr int kStripGap = 4;   // air between the strip and the window it belongs to
+constexpr int kStripSide = 4;  // how much narrower than the window it is, on each side
+
+constexpr wchar_t kStripTemplate[] = LR"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box;margin:0;padding:0;font-family:"Segoe UI",sans-serif}
+  html,body{height:100%;background:transparent;overflow:hidden;color:#d7e1ea}
+  body{user-select:none;cursor:default}
+  #bar{display:flex;align-items:center;gap:3px;height:100%;padding:3px;overflow-x:auto;
+    overflow-y:hidden;background:#0f141b;border:1px solid #2b3644;border-radius:6px;
+    opacity:.55;transition:opacity .14s ease}
+  #bar:hover{opacity:1}
+  #bar::-webkit-scrollbar{width:0;height:0}
+  #url{flex:0 0 94px;height:20px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;
+    border:1px solid #2b3644;border-radius:4px;user-select:text}
+  #url:focus{outline:none;border-color:#4a90c2}
+  button{flex:0 0 20px;height:20px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;
+    background:#1a2330;border:1px solid #2b3644;border-radius:4px}
+  button:hover{color:#fff;background:#253141}
+  button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
+  #go{display:inline-flex;align-items:center;justify-content:center}
+</style></head><body><div id="bar"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Cerrar">&#10005;</button></div>
+<script>
+(function () {
+  function send(message) { try { window.chrome.webview.postMessage(message); } catch (e) { } }
+  var url = document.getElementById("url");
+  function submit() {
+    var value = url.value.trim();
+    if (value) { send("G" + value); }
+  }
+  document.getElementById("go").onclick = submit;
+  url.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } };
+  document.getElementById("back").onclick = function () { send("B"); };
+  document.getElementById("fwd").onclick = function () { send("F"); };
+  document.getElementById("setupbtn").onclick = function () { send("L"); };
+  document.getElementById("options").onclick = function () { send("O"); };
+  document.getElementById("help").onclick = function () { send("H"); };
+  document.getElementById("close").onclick = function () { send("X"); };
+  // One line has nothing to scroll vertically, so the wheel walks it sideways instead.
+  var bar = document.getElementById("bar");
+  bar.addEventListener("wheel", function (e) {
+    bar.scrollLeft += (e.deltaY || e.deltaX);
+    e.preventDefault();
+  }, { passive: false });
+  url.focus();
+  url.select();
+})();
+</script></body></html>)HTML";
+
+HWND g_stripWindow = nullptr;
+HWND g_stripOwner = nullptr;  // the window the strip is nailed above
+bool g_stripShown = false;
+bool g_stripPendingShow = false;  // asked for before its engine finished loading
+ComPtr<ICoreWebView2Controller> g_stripController;
+ComPtr<ICoreWebView2> g_stripWebview;
+ComPtr<ICoreWebView2CompositionController> g_stripComposition;
+ComPtr<IDCompositionDevice> g_stripDevice;
+ComPtr<IDCompositionTarget> g_stripTarget;
+ComPtr<IDCompositionVisual> g_stripRoot;
+HCURSOR g_stripCursor = nullptr;
+
+void ShowStrip();  // used by the engine's own first page, defined below with the rest
+
+// A JavaScript string literal: an address can hold quotes and backslashes, and the strip is updated
+// in place instead of being rebuilt on every show.
+std::wstring JsLiteral(const std::wstring& text) {
+  std::wstring out = L"'";
+  for (wchar_t c : text) {
+    if (c == L'\\' || c == L'\'') {
+      out += L'\\';
+    }
+    if (c == L'\r' || c == L'\n') {
+      continue;
+    }
+    out += c;
+  }
+  out += L'\'';
+  return out;
+}
+
+std::wstring BuildStripHtml() {
+  std::wstring html(kStripTemplate);
+  ReplaceToken(&html, L"%URL%", EscapeAttribute(g_url));
+  const std::wstring disabled = g_url.empty() ? L" disabled" : L"";
+  for (size_t slot = html.find(L"%DISABLED%"); slot != std::wstring::npos;
+       slot = html.find(L"%DISABLED%", slot)) {
+    html.replace(slot, 10, disabled);
+    slot += disabled.size();
+  }
+  return html;
+}
+
+// The strip answers with the same commands as the bar. The panels need more than one line, so those
+// buttons bring the start page up in the window: it is the only surface with room for them.
+void OnStripCommand(const std::wstring& message) {
+  if (message.empty()) {
+    return;
+  }
+  switch (message[0]) {
+    case L'G':
+      HideStrip();
+      Navigate(message.substr(1));
+      break;
+    case L'B':
+      if (!g_url.empty()) {
+        HideStrip();
+        RunInPage(L"history.back()");
+      }
+      break;
+    case L'F':
+      if (!g_url.empty()) {
+        HideStrip();
+        RunInPage(L"history.forward()");
+      }
+      break;
+    case L'X':
+      HideStrip();
+      PostMessageW(g_window, WM_CLOSE, 0, 0);
+      break;
+    case L'O':
+      HideStrip();
+      g_settingsPanel = true;
+      ShowBar();
+      break;
+    case L'L':
+      HideStrip();
+      g_setupPanel = true;
+      ShowBar();
+      break;
+    case L'H':
+      HideStrip();
+      g_commandsPanel = true;
+      ShowBar();
+      break;
+    default:
+      break;
+  }
+}
+
+// Centred on the window, a touch narrower, one gap above its top edge -- or below it when the screen
+// has no room up there. The owner goes as the window to insert after, so the strip travels with its
+// window in the z-order instead of being left behind when the window comes forward.
+void PlaceStrip() {
+  if (!g_stripWindow || !g_stripOwner || !IsWindow(g_stripOwner)) {
+    return;
+  }
+  RECT owner = {};
+  if (!GetWindowRect(g_stripOwner, &owner)) {
+    return;
+  }
+  const int width = (owner.right - owner.left) - kStripSide * 2;
+  int left = owner.left + kStripSide;
+  int top = owner.top - kStripHeight - kStripGap;
+  MONITORINFO info = {sizeof(info)};
+  if (GetMonitorInfoW(MonitorFromWindow(g_stripOwner, MONITOR_DEFAULTTONEAREST), &info)) {
+    if (top < info.rcWork.top) {
+      top = owner.bottom + kStripGap;
+    }
+    if (left + width > info.rcWork.right) {
+      left = info.rcWork.right - width;
+    }
+    if (left < info.rcWork.left) {
+      left = info.rcWork.left;
+    }
+    if (top + kStripHeight > info.rcWork.bottom) {
+      top = info.rcWork.bottom - kStripHeight;
+    }
+    if (top < info.rcWork.top) {
+      top = info.rcWork.top;
+    }
+  }
+  SetWindowPos(g_stripWindow, g_stripOwner, left, top, width, kStripHeight, SWP_NOACTIVATE);
+  if (g_stripController) {
+    RECT bounds = {0, 0, width, kStripHeight};
+    g_stripController->put_Bounds(bounds);
+  }
+}
+
+void HideStrip() {
+  g_stripPendingShow = false;
+  if (!g_stripShown) {
+    return;
+  }
+  g_stripShown = false;
+  if (g_stripWindow) {
+    ShowWindow(g_stripWindow, SW_HIDE);
+  }
+}
+
+// The window moved, resized or came forward: the strip is nailed to its top edge.
+void RepositionStripIfShown() {
+  if (g_stripShown) {
+    PlaceStrip();
+  }
+}
+
+void DestroyStrip() {
+  g_stripShown = false;
+  g_stripPendingShow = false;
+  g_stripWebview.Reset();
+  if (g_stripController) {
+    g_stripController->Close();
+    g_stripController.Reset();
+  }
+  g_stripComposition.Reset();
+  g_stripRoot.Reset();
+  g_stripTarget.Reset();
+  g_stripDevice.Reset();
+  if (g_stripWindow) {
+    DestroyWindow(g_stripWindow);
+    g_stripWindow = nullptr;
+  }
+}
+
+LRESULT CALLBACK StripProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  switch (message) {
+    case WM_SETFOCUS:
+      if (g_stripController) {
+        g_stripController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+      }
+      return 0;
+    case WM_SETCURSOR:
+      if (LOWORD(lparam) == HTCLIENT && g_stripCursor) {
+        SetCursor(g_stripCursor);
+        return TRUE;
+      }
+      break;
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSELEAVE: {
+      static bool tracking = false;
+      if (message == WM_MOUSEMOVE && !tracking) {
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
+        tracking = TrackMouseEvent(&track);
+      } else if (message == WM_MOUSELEAVE) {
+        tracking = false;
+      }
+      SendMouseTo(g_stripComposition.Get(), window, message, wparam, lparam);
+      return 0;
+    }
+    // Closing the strip is hiding it: the engine is kept for the next press.
+    case WM_CLOSE:
+      HideStrip();
+      return 0;
+    default:
+      break;
+  }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
+
+void CreateStripController(ICoreWebView2Environment* environment) {
+  ComPtr<ICoreWebView2Environment3> environment3;
+  if (FAILED(environment->QueryInterface(IID_PPV_ARGS(&environment3))) || !environment3) {
+    return;
+  }
+  environment3->CreateCoreWebView2CompositionController(
+      g_stripWindow,
+      Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
+          [](HRESULT result, ICoreWebView2CompositionController* composition) -> HRESULT {
+            if (FAILED(result) || !composition || !g_stripWindow) {
+              return S_OK;
+            }
+            g_stripComposition = composition;
+            if (FAILED(composition->QueryInterface(IID_PPV_ARGS(&g_stripController))) ||
+                !g_stripController) {
+              return S_OK;
+            }
+            if (!BuildCompositionTree(g_stripWindow, composition, &g_stripDevice, &g_stripTarget,
+                                      &g_stripRoot)) {
+              return S_OK;
+            }
+            g_stripController->get_CoreWebView2(&g_stripWebview);
+            RECT bounds = {};
+            GetClientRect(g_stripWindow, &bounds);
+            g_stripController->put_Bounds(bounds);
+            g_stripController->put_IsVisible(TRUE);
+            // Alpha 0 behind the line: what the CSS draws with less than full opacity lets the
+            // desktop through, which is the whole point of the fade.
+            ComPtr<ICoreWebView2Controller2> controller2;
+            if (SUCCEEDED(g_stripController.As(&controller2)) && controller2) {
+              controller2->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{0, 0, 0, 0});
+            }
+            EventRegistrationToken cursorToken = {};
+            g_stripComposition->add_CursorChanged(
+                Callback<ICoreWebView2CursorChangedEventHandler>(
+                    [](ICoreWebView2CompositionController* sender, IUnknown*) -> HRESULT {
+                      HCURSOR cursor = nullptr;
+                      if (sender && SUCCEEDED(sender->get_Cursor(&cursor)) && cursor) {
+                        g_stripCursor = cursor;
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &cursorToken);
+            EventRegistrationToken messageToken = {};
+            g_stripWebview->add_WebMessageReceived(
+                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                    [](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                      LPWSTR raw = nullptr;
+                      if (SUCCEEDED(args->TryGetWebMessageAsString(&raw)) && raw) {
+                        OnStripCommand(raw);
+                        CoTaskMemFree(raw);
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &messageToken);
+            EventRegistrationToken loadedToken = {};
+            g_stripWebview->add_NavigationCompleted(
+                Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                    [](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                      if (g_stripPendingShow) {
+                        g_stripPendingShow = false;
+                        ShowStrip();  // the press that started the engine is still waiting for it
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &loadedToken);
+            const std::wstring html = BuildStripHtml();
+            g_stripWebview->NavigateToString(html.c_str());
+            return S_OK;
+          })
+          .Get());
+}
+
+void CreateStripEngine() {
+  if (!g_stripWindow) {
+    return;
+  }
+  if (g_environment) {
+    CreateStripController(g_environment.Get());
+    return;
+  }
+  const std::wstring folder = UserDataFolder();
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, folder.empty() ? nullptr : folder.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
+            if (SUCCEEDED(result) && environment) {
+              g_environment = environment;
+              CreateStripController(environment);
+            }
+            return S_OK;
+          })
+          .Get());
+}
+
+void CreateStripWindow() {
+  if (g_stripWindow) {
+    return;
+  }
+  WNDCLASSEXW windowClass = {};
+  windowClass.cbSize = sizeof(windowClass);
+  windowClass.lpfnWndProc = StripProc;
+  windowClass.hInstance = GetModuleHandleW(nullptr);
+  windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  windowClass.lpszClassName = kStripClass;
+  windowClass.hbrBackground = nullptr;
+  RegisterClassExW(&windowClass);
+  // No redirection bitmap: the engine's pixels reach the desktop compositor directly, which is what
+  // makes a half-opacity line actually see-through. WS_EX_TOOLWINDOW keeps it out of the taskbar
+  // and out of Alt+Tab -- it is part of the window it belongs to, not a window of its own.
+  g_stripWindow = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+                                  kStripClass, kTitle, WS_POPUP, 0, 0, 10, kStripHeight, nullptr,
+                                  nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!g_stripWindow) {
+    return;
+  }
+  CreateStripEngine();
+}
+
+void ShowStrip() {
+  if (!g_window) {
+    return;
+  }
+  if (!g_stripWindow) {
+    CreateStripWindow();
+  }
+  if (!g_stripWindow) {
+    return;
+  }
+  g_stripOwner = g_window;
+  if (!g_stripController) {
+    g_stripPendingShow = true;  // the engine is still starting; its first page shows the strip
+    return;
+  }
+  PlaceStrip();
+  // The address is refreshed in place: the strip is one engine kept warm, not a page rebuilt on
+  // every press.
+  if (g_stripWebview) {
+    const std::wstring script =
+        L"(function(){var el=document.getElementById('url');if(el){el.value=" + JsLiteral(g_url) +
+        L";el.select();}})();";
+    g_stripWebview->ExecuteScript(script.c_str(), nullptr);
+  }
+  ShowWindow(g_stripWindow, SW_SHOWNOACTIVATE);
+  g_stripShown = true;
+}
+
+// Ctrl+Alt+S is a switch on the strip. A window with no page has nothing to put it over, so that one
+// keeps the start page it always had.
+void ToggleStrip() {
+  if (g_stripShown || g_stripPendingShow) {
+    HideStrip();
+    return;
+  }
+  ShowStrip();
+}
+
+void ToggleStartSurface() {
+  if (g_url.empty() || g_showingBar) {
+    HideStrip();
+    ShowBar();
+    return;
+  }
+  ToggleStrip();
 }
 
 }  // namespace
