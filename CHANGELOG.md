@@ -1,14 +1,28 @@
 # Novedades
 
+## 1.1.7 - 2026-11-05
+
+- **La tira ya no se cierra al pulsar un botón.** Navegar, ir atrás o adelante cambia la página por
+  debajo y la tira se queda donde está, con el campo siguiendo la dirección de la página (también si
+  cambias de página con un enlace). Opciones, ayuda e instalar tampoco la cierran: abren su panel en
+  la pantalla de inicio, en la ventana. La tira solo la quitan el atajo `Ctrl+Alt+S` y el aspa, que
+  además cierra la ventana.
+- **Y se puede volver al comportamiento anterior.** En Opciones hay una casilla nueva, *La tira queda
+  abierta*, marcada por defecto; al desmarcarla la tira se quita en cada pulsación, como antes. Es una
+  opción de la app, así que todas las ventanas la comparten.
+- La versión sube a **1.1.7**.
+
 ## 1.1.6 - 2026-11-05
 
 - **`Ctrl+Alt+S` ya no te saca de la página.** En una ventana con página cargada abre una tira de una
-  sola línea, la pantalla de inicio comprimida, flotando 4 px por encima de la ventana: algo más
-  estrecha que ella, encima de las demás ventanas y sin tocar el tamaño ni las colisiones. Las
-  opciones que no caben se recorren en horizontal, con la rueda. El `Ctrl+Alt+S` la muestra y la
-  oculta como un interruptor, y en cuanto el ratón no está encima baja a media transparencia, con una
-  transición corta, y vuelve a opaca al pasar por ella. En una ventana sin página, el atajo sigue
-  abriendo la pantalla de inicio de siempre.
+  sola línea, la pantalla de inicio comprimida, flotando 4 px por encima de la ventana y centrada. La
+  tira mide lo que miden sus botones, nunca más que la ventana: los botones mandan, y el campo de URL
+  (con su botón de ir) solo aparece si la ventana es lo bastante ancha para que quepa todo; si no,
+  simplemente no está. Encima de las demás ventanas y sin tocar el tamaño ni las colisiones. Lo que
+  aun así no quepa se recorre en horizontal, con la rueda. El `Ctrl+Alt+S` la muestra y la oculta como
+  un interruptor, y en cuanto el ratón no está encima baja a media transparencia, con una transición
+  corta, y vuelve a opaca al pasar por ella. En una ventana sin página, el atajo sigue abriendo la
+  pantalla de inicio de siempre.
 - La versión sube a **1.1.6**.
 
 ## 1.1.5 - 2026-11-05

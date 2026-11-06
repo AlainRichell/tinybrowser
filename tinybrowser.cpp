@@ -124,6 +124,9 @@ bool g_pushOthers = false;    // option: the window being dragged moves its neig
 // whole app -- the copy that owns Ctrl+Alt+C holds it -- because the taskbar grouped the copies into
 // a single button and one icon per window would be worse than the button it replaces.
 bool g_trayOnly = true;
+// Option: the floating strip stays where it is after one of its buttons is pressed. On by default;
+// with it off the strip goes away on every press, as it did first.
+bool g_stripStays = true;
 bool g_trayIconAdded = false;  // this copy is the one holding the icon
 HICON g_trayIcon = nullptr;    // the small icon the notification area shows
 UINT g_taskbarCreated = 0;     // "TaskbarCreated": explorer restarted and wants the icon back
@@ -270,6 +273,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
 <label><input type="checkbox" id="trayonly"%CHECKED_TRAY%><span>Solo en notificaciones</span></label>
+<label><input type="checkbox" id="stripstays"%CHECKED_STAYS%><span>La tira queda abierta</span></label>
 <label class="range"><span>Rango del color</span><span class="value" id="keyrangevalue">%KEY_RANGE%</span></label>
 <input type="range" id="keyrange" min="0" max="40" step="1" value="%KEY_RANGE%">
 </div>
@@ -331,6 +335,8 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   pushOthers.onchange = function () { send("P" + (pushOthers.checked ? "1" : "0")); };
   var trayOnly = document.getElementById("trayonly");
   trayOnly.onchange = function () { send("Y" + (trayOnly.checked ? "1" : "0")); };
+  var stripStays = document.getElementById("stripstays");
+  stripStays.onchange = function () { send("Q" + (stripStays.checked ? "1" : "0")); };
   // The range only travels on release: dragging would otherwise rewrite the settings file and
   // re-filter every window on each pixel of the slider.
   var keyRange = document.getElementById("keyrange");
@@ -573,6 +579,7 @@ void DoUninstall();
 void ToggleStartSurface();     // Ctrl+Alt+S: the strip over a page, the start page without one
 void HideStrip();              // the strip in its own window, shared with WindowProc
 void RepositionStripIfShown(); // the strip follows its window, edge and gap included
+void RefreshStripAddress();    // the strip's field follows the page while the strip stays open
 void DestroyStrip();
 
 void ShowBar() {
@@ -595,6 +602,7 @@ void ShowBar() {
   ReplaceToken(&html, L"%CHECKED_OVERLAP%", g_blockOverlap ? L" checked" : L"");
   ReplaceToken(&html, L"%CHECKED_PUSH%", g_pushOthers ? L" checked" : L"");
   ReplaceToken(&html, L"%CHECKED_TRAY%", g_trayOnly ? L" checked" : L"");
+  ReplaceToken(&html, L"%CHECKED_STAYS%", g_stripStays ? L" checked" : L"");
   wchar_t rangeValue[8] = {};
   wsprintfW(rangeValue, L"%d", g_keyRange);
   ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
@@ -1255,6 +1263,7 @@ void LoadSettings() {
   g_blockOverlap = GetPrivateProfileIntW(kSettingsSection, L"NoOverlap", 1, path) != 0;
   g_pushOthers = GetPrivateProfileIntW(kSettingsSection, L"PushOthers", 0, path) != 0;
   g_trayOnly = GetPrivateProfileIntW(kSettingsSection, L"TrayOnly", 1, path) != 0;
+  g_stripStays = GetPrivateProfileIntW(kSettingsSection, L"StripStays", 1, path) != 0;
   // A window that opened a snapshot keeps the margin that .to brought: the file answers for the
   // app, and this window already has its own answer.
   if (!g_keyRangeLocal) {
@@ -1276,6 +1285,8 @@ void SaveSettings() {
   WritePrivateProfileStringW(kSettingsSection, L"PushOthers", value, path);
   wsprintfW(value, L"%d", g_trayOnly ? 1 : 0);
   WritePrivateProfileStringW(kSettingsSection, L"TrayOnly", value, path);
+  wsprintfW(value, L"%d", g_stripStays ? 1 : 0);
+  WritePrivateProfileStringW(kSettingsSection, L"StripStays", value, path);
   wsprintfW(value, L"%d", g_keyRange);
   WritePrivateProfileStringW(kSettingsSection, L"KeyRange", value, path);
 }
@@ -1304,6 +1315,15 @@ void SetPushOthers(bool on) {
     return;
   }
   g_pushOthers = on;
+  SaveSettings();
+  ShareSettings();
+}
+
+void SetStripStays(bool on) {
+  if (g_stripStays == on) {
+    return;
+  }
+  g_stripStays = on;
   SaveSettings();
   ShareSettings();
 }
@@ -2308,6 +2328,7 @@ void OnBarCommand(const std::wstring& message) {
     case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
     case L'Y': SetTrayOnly(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
+    case L'Q': SetStripStays(message.size() > 1 && message[1] == L'1'); break;
     // From the setup panel: install, uninstall and the desktop icon. The bar is rebuilt so the panel
     // comes back showing what the machine now holds.
     case L'I': DoInstall(); g_setupPanel = true; ShowBar(); break;
@@ -3961,6 +3982,8 @@ void AttachWebView() {
                 g_url = source;
                 CoTaskMemFree(source);
               }
+              // The strip may be sitting over this page: its field says where the page went.
+              RefreshStripAddress();
             }
             RunColourKey();  // un documento nuevo empieza sin filtro
             StartFit();
@@ -4372,9 +4395,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 // half strength when the pointer is elsewhere, with the desktop showing through it.
 // -------------------------------------------------------------------------------------------------
 constexpr wchar_t kStripClass[] = L"TinyBrowserStrip";
-constexpr int kStripHeight = 26;
+// The measurements the CSS is built with. They live here, and not only in the template, because the
+// host is the one that decides how wide the strip is: the two numbers have to be the same one.
+constexpr int kStripButton = 20;
+constexpr int kStripGapPx = 3;
+constexpr int kStripPadding = 3;
+constexpr int kStripBorder = 1;
+constexpr int kStripUrl = 94;
+// Exactly one button plus the bar's own padding and border: the box-sizing is border-box on both
+// sides, so a line two pixels shorter than this clips the buttons.
+constexpr int kStripHeight = kStripButton + 2 * kStripPadding + 2 * kStripBorder;
 constexpr int kStripGap = 4;   // air between the strip and the window it belongs to
-constexpr int kStripSide = 4;  // how much narrower than the window it is, on each side
+constexpr int kStripSide = 4;  // how much narrower than the window it is, at most, on each side
 
 constexpr wchar_t kStripTemplate[] = LR"HTML(<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -4382,19 +4414,21 @@ constexpr wchar_t kStripTemplate[] = LR"HTML(<!doctype html>
   *{box-sizing:border-box;margin:0;padding:0;font-family:"Segoe UI",sans-serif}
   html,body{height:100%;background:transparent;overflow:hidden;color:#d7e1ea}
   body{user-select:none;cursor:default}
-  #bar{display:flex;align-items:center;gap:3px;height:100%;padding:3px;overflow-x:auto;
+  #bar{display:flex;align-items:center;gap:%GAP%px;height:100%;padding:%PAD%px;overflow-x:auto;
     overflow-y:hidden;background:#0f141b;border:1px solid #2b3644;border-radius:6px;
     opacity:.55;transition:opacity .14s ease}
   #bar:hover{opacity:1}
   #bar::-webkit-scrollbar{width:0;height:0}
-  #url{flex:0 0 94px;height:20px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;
-    border:1px solid #2b3644;border-radius:4px;user-select:text}
+  /* The address field is the first thing to fall: the line exists for the buttons. It and Go start
+     hidden, and the host shows them only when the window is wide enough to hold them. */
+  #url{flex:0 0 %URLW%px;min-width:0;height:%BTN%px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;
+    border:1px solid #2b3644;border-radius:4px;user-select:text;display:none}
   #url:focus{outline:none;border-color:#4a90c2}
-  button{flex:0 0 20px;height:20px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;
+  button{flex:0 0 %BTN%px;height:%BTN%px;font-size:11px;line-height:1;cursor:pointer;color:#9db2c6;
     background:#1a2330;border:1px solid #2b3644;border-radius:4px}
   button:hover{color:#fff;background:#253141}
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
-  #go{display:inline-flex;align-items:center;justify-content:center}
+  #go{display:none;align-items:center;justify-content:center}
 </style></head><body><div id="bar"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Cerrar">&#10005;</button></div>
 <script>
 (function () {
@@ -4434,6 +4468,7 @@ ComPtr<IDCompositionDevice> g_stripDevice;
 ComPtr<IDCompositionTarget> g_stripTarget;
 ComPtr<IDCompositionVisual> g_stripRoot;
 HCURSOR g_stripCursor = nullptr;
+bool g_stripFieldShown = false;  // whether the page is currently showing the address field
 
 void ShowStrip();  // used by the engine's own first page, defined below with the rest
 
@@ -4454,6 +4489,19 @@ std::wstring JsLiteral(const std::wstring& text) {
   return out;
 }
 
+// The strip can stay open across a navigation, so its field has to follow the page -- a link clicked
+// in the page changes it too. The field is left alone while it has the caret: that is someone typing.
+void RefreshStripAddress() {
+  if (!g_stripShown || !g_stripWebview) {
+    return;
+  }
+  const std::wstring script =
+      L"(function(){var el=document.getElementById('url');"
+      L"if(el&&el.style.display!=='none'&&document.activeElement!==el){el.value=" +
+      JsLiteral(g_url) + L";}})();";
+  g_stripWebview->ExecuteScript(script.c_str(), nullptr);
+}
+
 std::wstring BuildStripHtml() {
   std::wstring html(kStripTemplate);
   ReplaceToken(&html, L"%URL%", EscapeAttribute(g_url));
@@ -4463,6 +4511,16 @@ std::wstring BuildStripHtml() {
     html.replace(slot, 10, disabled);
     slot += disabled.size();
   }
+  // The same numbers the width is computed with, so the line and the window can never disagree.
+  wchar_t number[16] = {};
+  wsprintfW(number, L"%d", kStripButton);
+  ReplaceToken(&html, L"%BTN%", number);
+  wsprintfW(number, L"%d", kStripGapPx);
+  ReplaceToken(&html, L"%GAP%", number);
+  wsprintfW(number, L"%d", kStripPadding);
+  ReplaceToken(&html, L"%PAD%", number);
+  wsprintfW(number, L"%d", kStripUrl);
+  ReplaceToken(&html, L"%URLW%", number);
   return html;
 }
 
@@ -4473,19 +4531,27 @@ void OnStripCommand(const std::wstring& message) {
     return;
   }
   switch (message[0]) {
+    // The strip stays where it is unless the option says otherwise: the page changes underneath it,
+    // which is the point of having it over a page at all.
     case L'G':
-      HideStrip();
+      if (!g_stripStays) {
+        HideStrip();
+      }
       Navigate(message.substr(1));
       break;
     case L'B':
       if (!g_url.empty()) {
-        HideStrip();
+        if (!g_stripStays) {
+          HideStrip();
+        }
         RunInPage(L"history.back()");
       }
       break;
     case L'F':
       if (!g_url.empty()) {
-        HideStrip();
+        if (!g_stripStays) {
+          HideStrip();
+        }
         RunInPage(L"history.forward()");
       }
       break;
@@ -4493,18 +4559,17 @@ void OnStripCommand(const std::wstring& message) {
       HideStrip();
       PostMessageW(g_window, WM_CLOSE, 0, 0);
       break;
+    // The panels need more than one line, so these buttons bring the start page up in the window.
+    // They do not close the strip: nothing does except the chord and the X.
     case L'O':
-      HideStrip();
       g_settingsPanel = true;
       ShowBar();
       break;
     case L'L':
-      HideStrip();
       g_setupPanel = true;
       ShowBar();
       break;
     case L'H':
-      HideStrip();
       g_commandsPanel = true;
       ShowBar();
       break;
@@ -4513,9 +4578,41 @@ void OnStripCommand(const std::wstring& message) {
   }
 }
 
-// Centred on the window, a touch narrower, one gap above its top edge -- or below it when the screen
-// has no room up there. The owner goes as the window to insert after, so the strip travels with its
-// window in the z-order instead of being left behind when the window comes forward.
+// As wide as what it holds, never wider than its window allows: the buttons set the width, and the
+// address field is the first thing to fall -- the line exists for them, and Go only exists to send
+// what that field says.
+int StripWidthFor(HWND owner, bool* withUrl) {
+  *withUrl = false;
+  RECT rect = {};
+  if (!owner || !GetWindowRect(owner, &rect)) {
+    return 0;
+  }
+  const int maxWidth = (rect.right - rect.left) - kStripSide * 2;
+  constexpr int kPlainButtons = 6;  // back, forward, install, options, help, close
+  const int plain = kPlainButtons * kStripButton + (kPlainButtons - 1) * kStripGapPx +
+                    2 * kStripPadding + 2 * kStripBorder;
+  const int full = plain + kStripUrl + kStripButton + 2 * kStripGapPx;  // ... with Go and the field
+  *withUrl = full <= maxWidth;
+  const int wanted = *withUrl ? full : plain;
+  return wanted < maxWidth ? wanted : maxWidth;
+}
+
+void ApplyStripField(bool visible) {
+  if (!g_stripWebview) {
+    return;
+  }
+  const wchar_t* script =
+      visible
+          ? L"(function(){var u=document.getElementById('url');var b=document.getElementById('go');"
+            L"u.style.display='block';b.style.display='inline-flex';u.focus();u.select();})();"
+          : L"(function(){var u=document.getElementById('url');var b=document.getElementById('go');"
+            L"u.style.display='none';b.style.display='none';})();";
+  g_stripWebview->ExecuteScript(script, nullptr);
+}
+
+// Centred on the window, one gap above its top edge -- or below it when the screen has no room up
+// there. The owner goes as the window to insert after, so the strip travels with its window in the
+// z-order instead of being left behind when the window comes forward.
 void PlaceStrip() {
   if (!g_stripWindow || !g_stripOwner || !IsWindow(g_stripOwner)) {
     return;
@@ -4524,8 +4621,19 @@ void PlaceStrip() {
   if (!GetWindowRect(g_stripOwner, &owner)) {
     return;
   }
-  const int width = (owner.right - owner.left) - kStripSide * 2;
-  int left = owner.left + kStripSide;
+  bool withUrl = false;
+  const int width = StripWidthFor(g_stripOwner, &withUrl);
+  if (width <= 0) {
+    return;
+  }
+  // Only when the answer changes: a window that moves asks this dozens of times per gesture, and
+  // the document has nothing to do with any of it.
+  if (g_stripFieldShown != withUrl) {
+    g_stripFieldShown = withUrl;
+    ApplyStripField(withUrl);
+  }
+  const int ownerWidth = owner.right - owner.left;
+  int left = owner.left + (ownerWidth - width) / 2;
   int top = owner.top - kStripHeight - kStripGap;
   MONITORINFO info = {sizeof(info)};
   if (GetMonitorInfoW(MonitorFromWindow(g_stripOwner, MONITOR_DEFAULTTONEAREST), &info)) {
