@@ -178,6 +178,10 @@ bool g_showingBar = false;     // the document on screen is our own bar, not a p
 bool g_setupPanel = false;     // one-shot: the next bar comes up with the setup panel open
 bool g_settingsPanel = false;  // ... and the same for the options panel, opened from the strip
 bool g_commandsPanel = false;  // ... and for the help panel, likewise
+// Which panel is open OVER the page, if any: options, setup or commands. Empty when none. A panel
+// lives in the page itself, so opening one does not navigate, and closing it leaves the page exactly
+// as it was -- same scroll, same state, no reload.
+std::wstring g_pagePanel;
 // Ctrl+Alt+W hid this copy, so the next press brings it back instead of hiding another one. Each
 // copy keeps its own answer and the chord owner asks for it; nothing is shared between processes.
 bool g_hiddenByW = false;
@@ -580,6 +584,7 @@ void ToggleStartSurface();     // Ctrl+Alt+S: the strip over a page, the start p
 void HideStrip();              // the strip in its own window, shared with WindowProc
 void RepositionStripIfShown(); // the strip follows its window, edge and gap included
 void RefreshStripAddress();    // the strip's field follows the page while the strip stays open
+void ShowPagePanel(const wchar_t* which);  // options over the page, without leaving it
 void DestroyStrip();
 
 void ShowBar() {
@@ -2314,6 +2319,25 @@ void MoveBy(long dx, long dy) {
   SetWindowPos(g_window, nullptr, target.left, target.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+// A panel that lives over the page is rebuilt in place; the one that lives in the bar comes back with
+// the bar.
+void RefreshPanelOrBar(const wchar_t* which) {
+  if (!g_pagePanel.empty()) {
+    const std::wstring open = g_pagePanel;
+    g_pagePanel.clear();  // so the call below does not read it as a second press
+    ShowPagePanel(open.c_str());
+    return;
+  }
+  if (lstrcmpiW(which, L"setup") == 0) {
+    g_setupPanel = true;
+  } else if (lstrcmpiW(which, L"settings") == 0) {
+    g_settingsPanel = true;
+  } else {
+    g_commandsPanel = true;
+  }
+  ShowBar();
+}
+
 void OnBarCommand(const std::wstring& message) {
   if (message.empty()) {
     return;
@@ -2329,19 +2353,20 @@ void OnBarCommand(const std::wstring& message) {
     case L'Y': SetTrayOnly(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
     case L'Q': SetStripStays(message.size() > 1 && message[1] == L'1'); break;
-    // From the setup panel: install, uninstall and the desktop icon. The bar is rebuilt so the panel
-    // comes back showing what the machine now holds.
-    case L'I': DoInstall(); g_setupPanel = true; ShowBar(); break;
-    case L'U': DoUninstall(); g_setupPanel = true; ShowBar(); break;
+    // From the setup panel: install, uninstall and the desktop icon. Whichever surface holds the
+    // panel is rebuilt, so it comes back showing what the machine now holds.
+    case L'I': DoInstall(); RefreshPanelOrBar(L"setup"); break;
+    case L'U': DoUninstall(); RefreshPanelOrBar(L"setup"); break;
     case L'K':
       if (message.size() > 1 && message[1] == L'1') {
         CreateDesktopShortcut();
       } else {
         RemoveDesktopShortcut();
       }
-      g_setupPanel = true;
-      ShowBar();
+      RefreshPanelOrBar(L"setup");
       break;
+    // The panel over the page closed itself; there is nothing left to track.
+    case L'Z': g_pagePanel.clear(); break;
     case L'X': PostMessageW(g_window, WM_CLOSE, 0, 0); break;
     case L'S': ToggleStartSurface(); break;
     case L'M': {
@@ -3984,6 +4009,8 @@ void AttachWebView() {
               }
               // The strip may be sitting over this page: its field says where the page went.
               RefreshStripAddress();
+              // A new document means the panel that lived in the old one is gone with it.
+              g_pagePanel.clear();
             }
             RunColourKey();  // un documento nuevo empieza sin filtro
             StartFit();
@@ -4524,8 +4551,146 @@ std::wstring BuildStripHtml() {
   return html;
 }
 
-// The strip answers with the same commands as the bar. The panels need more than one line, so those
-// buttons bring the start page up in the window: it is the only surface with room for them.
+// A JavaScript double-quoted string literal: the panel travels as HTML inside the page.
+std::wstring JsString(const std::wstring& text) {
+  std::wstring out = L"\"";
+  for (wchar_t c : text) {
+    if (c == L'\\' || c == L'"') {
+      out += L'\\';
+    }
+    if (c == L'\r' || c == L'\n') {
+      continue;
+    }
+    out += c;
+  }
+  out += L'"';
+  return out;
+}
+
+constexpr wchar_t kPanelStyle[] = LR"CSS(<style>
+#tiny-panel{position:fixed;inset:0;z-index:2147483647;box-sizing:border-box;overflow:auto;
+  background:rgba(9,13,19,.95);color:#9db2c6;font:10px/1.2 "Segoe UI",sans-serif;padding:3px 6px}
+#tiny-panel .title{color:#7fb3d5;margin-bottom:2px}
+#tiny-panel .close{position:absolute;right:5px;top:3px;padding:0 3px}
+#tiny-panel label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
+#tiny-panel input[type=checkbox]{width:11px;height:11px;margin:0;accent-color:#4a90c2}
+#tiny-panel .range{display:flex;justify-content:space-between;cursor:default}
+#tiny-panel input[type=range]{display:block;width:100%;height:10px;margin:0;accent-color:#4a90c2}
+#tiny-panel .value{color:#7fb3d5}
+#tiny-panel button{font:inherit;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;
+  border-radius:4px;padding:1px 4px;cursor:pointer}
+#tiny-panel button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
+#tiny-panel .actions{display:flex;gap:3px;margin:2px 0}
+#tiny-panel .actions button{flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#tiny-panel .note{margin-top:3px;color:#5b6b7d}
+#tiny-panel .k{display:inline-block;min-width:58px;color:#7fb3d5}
+</style>)CSS";
+
+std::wstring BuildPagePanelHtml(const std::wstring& which) {
+  wchar_t range[8] = {};
+  wsprintfW(range, L"%d", g_keyRange);
+  std::wstring html(kPanelStyle);
+  if (which == L"settings") {
+    html += L"<div class='title'>Opciones<button class='close' data-cmd='Z'>&#10005;</button></div>";
+    html += std::wstring(L"<label><input type='checkbox' id='tp-nooverlap' data-on='N1' data-off='N0'") +
+            (g_blockOverlap ? L" checked" : L"") + L"><span>No solapar ventanas</span></label>";
+    html += std::wstring(L"<label><input type='checkbox' id='tp-push' data-on='P1' data-off='P0'") +
+            (g_pushOthers ? L" checked" : L"") + (g_blockOverlap ? L"" : L" disabled") +
+            L"><span>Al arrastrar, empujar otras</span></label>";
+    html += std::wstring(L"<label><input type='checkbox' data-on='Y1' data-off='Y0'") +
+            (g_trayOnly ? L" checked" : L"") + L"><span>Solo en notificaciones</span></label>";
+    html += std::wstring(L"<label><input type='checkbox' data-on='Q1' data-off='Q0'") +
+            (g_stripStays ? L" checked" : L"") + L"><span>La tira queda abierta</span></label>";
+    html +=
+        std::wstring(
+            L"<label class='range'><span>Rango del color</span><span class='value' id='tp-rangeval'>") +
+        range + L"</span></label>";
+    html += std::wstring(L"<input type='range' min='0' max='40' step='1' value='") + range +
+            L"' data-on='T'>";
+    return html;
+  }
+  if (which == L"setup") {
+    const SetupInfo setup = DescribeSetup();
+    html +=
+        L"<div class='title'>Instalaci&oacute;n<button class='close' data-cmd='Z'>&#10005;</button></div>";
+    html += L"<div class='actions'><button data-cmd='I'>" + EscapeAttribute(setup.action) +
+            L"</button><button data-cmd='U'" + std::wstring(setup.installed ? L"" : L" disabled") +
+            L">Quitar</button></div>";
+    html += std::wstring(L"<label><input type='checkbox' data-on='K1' data-off='K0'") +
+            (FileExists(DesktopShortcutPath()) ? L" checked" : L"") +
+            (setup.installed ? L"" : L" disabled") + L"><span>Icono en el escritorio</span></label>";
+    html += L"<div class='note'>" + EscapeAttribute(setup.note) + L"</div>";
+    return html;
+  }
+  html += L"<div class='title'>Comandos<button class='close' data-cmd='Z'>&#10005;</button></div>";
+  html += L"<div><span class='k'>Ctrl+Alt+S</span>barra</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+T</span>ventana nueva</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+D</span>duplicar</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+G</span>guardar / cargar</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+Z</span>atr&aacute;s</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+C</span>ocultar</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+W</span>ocultar una</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+A</span>gotero</div>";
+  html += L"<div><span class='k'>Ctrl+Alt+X</span>cerrar</div>";
+  html += L"<div><span class='k'>Alt+arrastrar</span>mover</div>";
+  return html;
+}
+
+// Opens one of the panels as a layer over the page the window is showing. The page is not touched:
+// no navigation, no reload, and closing the panel leaves it exactly where it was. Over the start page
+// there is nothing to preserve, so there the bar's own panels are used.
+void ShowPagePanel(const wchar_t* which) {
+  if (!g_webview) {
+    return;
+  }
+  if (g_showingBar) {
+    if (lstrcmpiW(which, L"settings") == 0) {
+      g_settingsPanel = true;
+    } else if (lstrcmpiW(which, L"setup") == 0) {
+      g_setupPanel = true;
+    } else {
+      g_commandsPanel = true;
+    }
+    ShowBar();
+    return;
+  }
+  // The same button twice is a switch, like the chord.
+  if (g_pagePanel == which) {
+    RunInPage(L"(function(){var p=document.getElementById('tiny-panel');if(p){p.remove();}})();");
+    g_pagePanel.clear();
+    return;
+  }
+  g_pagePanel = which;
+  const std::wstring html = BuildPagePanelHtml(g_pagePanel);
+  const std::wstring script =
+      L"(function(){"
+      L"var old=document.getElementById('tiny-panel');if(old){old.remove();}"
+      L"var d=document.createElement('div');d.id='tiny-panel';d.innerHTML=" +
+      JsString(html) +
+      L";"
+      L"function post(m){try{window.chrome.webview.postMessage(m);}catch(e){}}"
+      L"function close(){var p=document.getElementById('tiny-panel');if(p){p.remove();}post('Z');}"
+      L"(document.body||document.documentElement).appendChild(d);"
+      L"d.querySelectorAll('[data-on]').forEach(function(el){"
+      L"el.onchange=function(){post(el.type==='checkbox'?(el.checked?el.dataset.on:el.dataset.off)"
+      L":el.dataset.on+el.value);};"
+      L"if(el.type==='range'){el.oninput=function(){var v=document.getElementById('tp-rangeval');"
+      L"if(v){v.textContent=el.value;}};}});"
+      L"d.querySelectorAll('[data-cmd]').forEach(function(el){el.onclick=function(){"
+      L"var c=el.dataset.cmd;if(c==='Z'){close();}else{post(c);}};});"
+      // Pushing without the rule above it makes no sense: it is disabled in place, not hidden.
+      L"var n=d.querySelector('#tp-nooverlap'),p=d.querySelector('#tp-push');"
+      L"if(n&&p){n.onchange=function(){p.disabled=!n.checked;post(n.checked?'N1':'N0');};}"
+      L"d.addEventListener('click',function(e){if(e.target===d){close();}});"
+      L"document.addEventListener('keydown',function(e){if(e.key==='Escape'){var q="
+      L"document.getElementById('tiny-panel');if(q){q.remove();post('Z');}}},true);"
+      L"})();";
+  g_webview->ExecuteScript(script.c_str(), nullptr);
+}
+
+// The strip answers with the same commands as the bar. The panels open over the page instead of
+// replacing it, so asking for one never takes the page away; and nothing closes the strip except the
+// chord and the X.
 void OnStripCommand(const std::wstring& message) {
   if (message.empty()) {
     return;
@@ -4559,19 +4724,16 @@ void OnStripCommand(const std::wstring& message) {
       HideStrip();
       PostMessageW(g_window, WM_CLOSE, 0, 0);
       break;
-    // The panels need more than one line, so these buttons bring the start page up in the window.
-    // They do not close the strip: nothing does except the chord and the X.
+    // The same panels as the bar, over the page: nothing is navigated, so closing one leaves the page
+    // exactly where it was. They do not close the strip either.
     case L'O':
-      g_settingsPanel = true;
-      ShowBar();
+      ShowPagePanel(L"settings");
       break;
     case L'L':
-      g_setupPanel = true;
-      ShowBar();
+      ShowPagePanel(L"setup");
       break;
     case L'H':
-      g_commandsPanel = true;
-      ShowBar();
+      ShowPagePanel(L"commands");
       break;
     default:
       break;

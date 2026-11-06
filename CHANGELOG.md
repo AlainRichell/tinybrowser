@@ -4,9 +4,12 @@
 
 - **La tira ya no se cierra al pulsar un botón.** Navegar, ir atrás o adelante cambia la página por
   debajo y la tira se queda donde está, con el campo siguiendo la dirección de la página (también si
-  cambias de página con un enlace). Opciones, ayuda e instalar tampoco la cierran: abren su panel en
-  la pantalla de inicio, en la ventana. La tira solo la quitan el atajo `Ctrl+Alt+S` y el aspa, que
-  además cierra la ventana.
+  cambias de página con un enlace).
+- **Opciones, ayuda e instalar se abren encima de la página, sin irse de ella.** El panel aparece como
+  una capa sobre lo que estás viendo; al cerrarlo vuelves exactamente al mismo sitio, con el scroll y
+  el estado de la página intactos: no navega y no recarga. Pulsar el mismo botón otra vez lo cierra, y
+  también el aspa, un clic fuera o `Esc`.
+- **La tira solo la quitan el atajo `Ctrl+Alt+S` y el aspa**, que además cierra la ventana.
 - **Y se puede volver al comportamiento anterior.** En Opciones hay una casilla nueva, *La tira queda
   abierta*, marcada por defecto; al desmarcarla la tira se quita en cada pulsación, como antes. Es una
   opción de la app, así que todas las ventanas la comparten.
