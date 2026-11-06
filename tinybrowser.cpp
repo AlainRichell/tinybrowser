@@ -124,6 +124,10 @@ bool g_pushOthers = false;    // option: the window being dragged moves its neig
 // whole app -- the copy that owns Ctrl+Alt+C holds it -- because the taskbar grouped the copies into
 // a single button and one icon per window would be worse than the button it replaces.
 bool g_trayOnly = true;
+// Per window, and on by default: pinned means it stays over every other window, which is what tiny
+// has always done. Unpinned it behaves like any window -- it can be covered. It is not an app option:
+// each window has its own answer, and a .to carries it.
+bool g_pinned = true;
 // Option: the floating strip stays where it is after one of its buttons is pressed. On by default;
 // with it off the strip goes away on every press, as it did first.
 bool g_stripStays = true;
@@ -591,6 +595,7 @@ void RepositionStripIfShown(); // the strip follows its window, edge and gap inc
 void RefreshStripAddress();    // the strip's field follows the page while the strip stays open
 void RefreshStripHistory();    // ... and so do its back and forward buttons
 void ShowPagePanel(const wchar_t* which);  // options over the page, without leaving it
+void SetPinned(bool on);       // per window: over every other window, or an ordinary one
 void DestroyStrip();
 
 void ShowBar() {
@@ -1023,7 +1028,9 @@ void ShowInstance(bool focus) {
   }
   g_hiddenByW = false;  // visible again: W has nothing left to bring back
   ShowWindow(g_window, SW_SHOWNA);
-  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (g_pinned) {
+    SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
   if (g_controller) {
     // The engine was painting a window nobody could see: handing it the bounds again is what makes
     // it draw on the way back instead of at the first resize.
@@ -1507,7 +1514,12 @@ void ApplyTrayMode() {
     return;
   }
   const LONG_PTR style = GetWindowLongPtrW(g_window, GWL_EXSTYLE);
-  const LONG_PTR wanted = g_trayOnly ? (style | WS_EX_TOOLWINDOW) : (style & ~WS_EX_TOOLWINDOW);
+  // Pinned follows the app's own rule. Unpinned is a normal window and asks for a taskbar button and
+  // a place in Alt+Tab whatever the tray option says: with a maximised window over it, that button is
+  // the only way back.
+  const bool toolWindow = g_pinned && g_trayOnly;
+  LONG_PTR wanted = toolWindow ? (style | WS_EX_TOOLWINDOW) : (style & ~WS_EX_TOOLWINDOW);
+  wanted = g_pinned ? (wanted & ~WS_EX_APPWINDOW) : (wanted | WS_EX_APPWINDOW);
   if (wanted != style) {
     SetWindowLongPtrW(g_window, GWL_EXSTYLE, wanted);
     // The shell reads that style when a window shows, so a live switch needs one hide/show cycle.
@@ -1620,6 +1632,10 @@ bool BarIsAbove() {
 // the next pass. These short passes are what win the race; each one only touches the z-order
 // while the bar is really in front, so nothing moves when there is nothing to fix.
 void KeepOverBar() {
+  // An unpinned window goes behind what is in front, which is exactly what unpinning asked for.
+  if (!g_pinned) {
+    return;
+  }
   // If the shell was quicker than its own event, the bar is already in front and this pass wins
   // right away.
   if (BarIsAbove()) {
@@ -2626,6 +2642,7 @@ struct TinyState {
   std::vector<COLORREF> keyColours;
   int keyRange = -1;  // -1: the file carries none, so the option stays as it is
   int zoom = 0;       // thousandths of the factor, 0 when none was saved
+  int pinned = -1;    // 0 or 1; -1 when the file is older and says nothing, so it stays pinned
 };
 
 bool IsStatePath(const std::wstring& text) {
@@ -2716,6 +2733,9 @@ bool ReadState(const std::wstring& path, TinyState* state) {
   if (zoom >= 50 && zoom <= 5000) {
     state->zoom = zoom;
   }
+  // Older snapshots say nothing about the pin: they open pinned, which was the only behaviour then.
+  const int pinned = (int)GetPrivateProfileIntW(kStateSection, L"Pinned", (UINT)-1, path.c_str());
+  state->pinned = (pinned == 0 || pinned == 1) ? pinned : -1;
   return !state->url.empty();
 }
 
@@ -2761,6 +2781,8 @@ bool WriteState(const std::wstring& path, const TinyState& state) {
   }
   wsprintfW(value, L"%d", state.keyRange);
   WritePrivateProfileStringW(kStateSection, L"KeyRange", value, path.c_str());
+  wsprintfW(value, L"%d", state.pinned == 0 ? 0 : 1);
+  WritePrivateProfileStringW(kStateSection, L"Pinned", value, path.c_str());
   return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
@@ -2816,7 +2838,8 @@ bool AskStateToSave(wchar_t* path, DWORD size, const std::wstring& suggested,
   // dialog is open, or it would sit over the very fields being typed in.
   SetWindowPos(g_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   const BOOL picked = GetSaveFileNameW(&dialog);
-  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  SetWindowPos(g_window, g_pinned ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   return picked == TRUE;
 }
 
@@ -2835,7 +2858,8 @@ bool AskStateToOpen(wchar_t* path, DWORD size, const std::wstring& folder) {
   // dialog is open, or it would sit over the very fields being typed in.
   SetWindowPos(g_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   const BOOL picked = GetOpenFileNameW(&dialog);
-  SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  SetWindowPos(g_window, g_pinned ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   return picked == TRUE;
 }
 
@@ -3542,6 +3566,9 @@ void ApplyState(const TinyState& state) {
   }
   g_keyColours = state.keyColours;
   SetEngineBackground(!g_keyColours.empty());
+  if (state.pinned >= 0) {
+    SetPinned(state.pinned != 0);  // the snapshot's pin, not the one this window had
+  }
   Navigate(state.url);
   g_stateZoom = state.zoom;  // after Navigate, which clears it: this page keeps the zoom it had
   if (state.hasRect) {
@@ -3565,6 +3592,7 @@ void SaveState() {
   }
   state.keyColours = g_keyColours;
   state.keyRange = g_keyRange;
+  state.pinned = g_pinned ? 1 : 0;
   if (g_controller) {
     double zoom = 1.0;
     if (SUCCEEDED(g_controller->get_ZoomFactor(&zoom))) {
@@ -4297,7 +4325,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         KillTimer(window, kFitTimer);
         OnFitTimer();
       } else if (wparam == kTopmostTimer) {
-        if (BarIsAbove()) {
+        if (g_pinned && BarIsAbove()) {
           SetWindowPos(g_window, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
@@ -4433,8 +4461,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 constexpr wchar_t kStripClass[] = L"TinyBrowserStrip";
 // The measurements the CSS is built with. They live here, and not only in the template, because the
 // host is the one that decides how wide the strip is: the two numbers have to be the same one.
-constexpr int kStripButton = 20;
-constexpr int kStripGapPx = 3;
+constexpr int kStripButton = 18;
+constexpr int kStripGapPx = 2;
 constexpr int kStripPadding = 3;
 constexpr int kStripBorder = 1;
 constexpr int kStripUrl = 94;
@@ -4464,8 +4492,9 @@ constexpr wchar_t kStripTemplate[] = LR"HTML(<!doctype html>
     background:#1a2330;border:1px solid #2b3644;border-radius:4px}
   button:hover{color:#fff;background:#253141}
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
+  #pin.on{color:#eaf2f8;background:#2c4152;border-color:#4a90c2}
   #go{display:none;align-items:center;justify-content:center}
-</style></head><body><div id="bar"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Cerrar">&#10005;</button></div>
+</style></head><body><div id="bar"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="pin" title="Fijar: siempre encima"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></button><button id="close" title="Cerrar">&#10005;</button></div>
 <script>
 (function () {
   function send(message) { try { window.chrome.webview.postMessage(message); } catch (e) { } }
@@ -4481,6 +4510,7 @@ constexpr wchar_t kStripTemplate[] = LR"HTML(<!doctype html>
   document.getElementById("setupbtn").onclick = function () { send("L"); };
   document.getElementById("options").onclick = function () { send("O"); };
   document.getElementById("help").onclick = function () { send("H"); };
+  document.getElementById("pin").onclick = function () { send("J"); };
   document.getElementById("close").onclick = function () { send("X"); };
   // One line has nothing to scroll vertically, so the wheel walks it sideways instead.
   var bar = document.getElementById("bar");
@@ -4558,6 +4588,19 @@ void RefreshStripHistory() {
           L"(function(){var b=document.getElementById('back');var f=document.getElementById('fwd');") +
       L"if(b){b.disabled=" + std::wstring(back ? L"false" : L"true") +
       L";}if(f){f.disabled=" + std::wstring(forward ? L"false" : L"true") + L";}})();";
+  g_stripWebview->ExecuteScript(script.c_str(), nullptr);
+}
+
+// The pin says whether this window is over everything else. The button follows the state; the state
+// never follows the button.
+void RefreshStripPin() {
+  if (!g_stripShown || !g_stripWebview) {
+    return;
+  }
+  const std::wstring script = std::wstring(
+      L"(function(){var b=document.getElementById('pin');if(b){b.className=") +
+      (g_pinned ? L"'on';b.title='Fijada: siempre encima'" : L"'off';b.title='Sin fijar: una ventana normal'") +
+      L";}})();";
   g_stripWebview->ExecuteScript(script.c_str(), nullptr);
 }
 
@@ -4756,6 +4799,10 @@ void OnStripCommand(const std::wstring& message) {
       HideStrip();
       PostMessageW(g_window, WM_CLOSE, 0, 0);
       break;
+    // The pin: this window stops being always-on-top, or becomes it again.
+    case L'J':
+      SetPinned(!g_pinned);
+      break;
     // The same panels as the bar, over the page: nothing is navigated, so closing one leaves the page
     // exactly where it was. They do not close the strip either.
     case L'O':
@@ -4782,7 +4829,7 @@ int StripWidthFor(HWND owner, bool* withUrl) {
     return 0;
   }
   const int maxWidth = (rect.right - rect.left) - kStripSide * 2;
-  constexpr int kPlainButtons = 6;  // back, forward, install, options, help, close
+  constexpr int kPlainButtons = 7;  // back, forward, install, options, help, pin, close
   const int plain = kPlainButtons * kStripButton + (kPlainButtons - 1) * kStripGapPx +
                     2 * kStripPadding + 2 * kStripBorder;
   const int full = plain + kStripUrl + kStripButton + 2 * kStripGapPx;  // ... with Go and the field
@@ -4865,6 +4912,39 @@ void HideStrip() {
   }
 }
 
+// Pinned is over every other window, which is what tiny has always been; unpinned is an ordinary
+// window that anything may cover. The strip is part of this window and follows it in the z-order, or
+// it would be a toolbar floating over applications its window is behind.
+void ApplyPinned() {
+  if (!g_window) {
+    return;
+  }
+  // Changing the style needs one hide/show cycle of the window, and the strip goes with it. It is put
+  // back when it was open -- unless the option says a press closes it, which is exactly this press.
+  const bool stripWasShown = g_stripShown;
+  // The taskbar button goes with the state: pinned is the widget that lives in the tray, unpinned is
+  // a window like any other.
+  ApplyTrayMode();
+  SetWindowPos(g_window, g_pinned ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (g_stripWindow) {
+    SetWindowPos(g_stripWindow, g_pinned ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    PlaceStrip();  // ... and back directly above its window
+  }
+  if (stripWasShown && g_stripStays && !g_stripShown) {
+    ShowStrip();
+  }
+  RefreshStripPin();
+}
+
+void SetPinned(bool on) {
+  if (g_pinned == on) {
+    return;
+  }
+  g_pinned = on;
+  ApplyPinned();
+}
 // The window moved, resized or came forward: the strip is nailed to its top edge.
 void RepositionStripIfShown() {
   if (g_stripShown) {
@@ -5044,8 +5124,10 @@ void CreateStripWindow() {
   RegisterClassExW(&windowClass);
   // No redirection bitmap: the engine's pixels reach the desktop compositor directly, which is what
   // makes a half-opacity line actually see-through. WS_EX_TOOLWINDOW keeps it out of the taskbar
-  // and out of Alt+Tab -- it is part of the window it belongs to, not a window of its own.
-  g_stripWindow = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+  // and out of Alt+Tab -- it is part of the window it belongs to, not a window of its own. Topmost
+  // only while the window it belongs to is.
+  g_stripWindow = CreateWindowExW(WS_EX_TOOLWINDOW | (g_pinned ? WS_EX_TOPMOST : 0) |
+                                      WS_EX_NOREDIRECTIONBITMAP,
                                   kStripClass, kTitle, WS_POPUP, 0, 0, 10, kStripHeight, nullptr,
                                   nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!g_stripWindow) {
@@ -5081,6 +5163,7 @@ void ShowStrip() {
   ShowWindow(g_stripWindow, SW_SHOWNOACTIVATE);
   g_stripShown = true;
   RefreshStripHistory();  // the page may have moved while the strip was hidden
+  RefreshStripPin();      // ... and so may the window's own pin
 }
 
 // Ctrl+Alt+S is a switch on the strip. A window with no page has nothing to put it over, so that one
@@ -5183,6 +5266,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       }
       g_stateZoom = state.zoom;
       g_keyColours = state.keyColours;
+      if (state.pinned >= 0) {
+        g_pinned = state.pinned != 0;  // the window is created with the pin the file carries
+      }
       if (state.keyRange >= 0) {
         UseStateKeyRange(state.keyRange);  // the snapshot's margin, not the app's
       }
@@ -5243,7 +5329,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // window, the same engine, only without a shell entry of its own.
   // La transparencia necesita una ventana sin superficie propia (lo que se ve es el arbol de
   // composicion); el modo normal no, porque el motor pinta en su ventana hija.
-  const DWORD exStyle = WS_EX_TOPMOST | (g_trayOnly ? WS_EX_TOOLWINDOW : 0) |
+  // A .to can open unpinned: then the window is born as a normal window, with its taskbar button.
+  const bool toolWindow = g_pinned && g_trayOnly;
+  const DWORD exStyle = (g_pinned ? WS_EX_TOPMOST : WS_EX_APPWINDOW) |
+                        (toolWindow ? WS_EX_TOOLWINDOW : 0) |
                         (g_keyColours.empty() ? 0 : WS_EX_NOREDIRECTIONBITMAP);
   g_window = CreateWindowExW(
       exStyle, kWindowClass, kTitle, WS_POPUP,

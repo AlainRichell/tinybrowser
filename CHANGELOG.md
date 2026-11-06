@@ -1,5 +1,18 @@
 # Novedades
 
+## 1.1.8 - 2026-11-05
+
+- **Cada ventana se puede fijar o dejar de fijar, con un botón de chincheta en la tira**, a la
+  izquierda del aspa. Fijada es lo de siempre: por encima de todo. Sin fijar, la ventana pasa a ser una
+  ventana normal de Windows: otras pueden taparla y, para no perderla cuando la tapa una maximizada,
+  gana su hueco en la barra de tareas y en Alt+Tab. La tira se va con ella en el orden de capas.
+  Empieza fijada en cada ventana nueva y es cosa de cada ventana, no una opción de la aplicación.
+- **El `.to` guarda el pin.** `Ctrl+Alt+G` lo escribe y al abrir el archivo la ventana vuelve fijada o
+  sin fijar, como estaba. Los `.to` viejos, que no lo dicen, abren fijados como siempre.
+- La tira baja sus botones a 18 px para que la chincheta entre sin que se recorte nada: con siete
+  botones mide 146 px y sigue cabiendo en la ventana de 160.
+- La versión sube a **1.1.8**.
+
 ## 1.1.7 - 2026-11-05
 
 - **La tira ya no se cierra al pulsar un botón.** Navegar, ir atrás o adelante cambia la página por
