@@ -10,6 +10,10 @@
   el estado de la página intactos: no navega y no recarga. Pulsar el mismo botón otra vez lo cierra, y
   también el aspa, un clic fuera o `Esc`.
 - **La tira solo la quitan el atajo `Ctrl+Alt+S` y el aspa**, que además cierra la ventana.
+- **Las flechas de atrás y adelante se apagan cuando no hay a dónde ir**, en vez de estar siempre
+  encendidas: las consulta al motor después de cada página y al mostrar la tira. La de atrás no se
+  enciende en el primer documento de la ventana, aunque la propia página ensucie su historial al
+  cargar (WhatsApp Web lo hace): atrás solo aparece desde la segunda página de verdad.
 - **Y se puede volver al comportamiento anterior.** En Opciones hay una casilla nueva, *La tira queda
   abierta*, marcada por defecto; al desmarcarla la tira se quita en cada pulsación, como antes. Es una
   opción de la app, así que todas las ventanas la comparten.

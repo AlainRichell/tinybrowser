@@ -166,6 +166,11 @@ ComPtr<ICoreWebView2Environment> g_environment;
 // strip. A low level mouse hook sees the input before anything can take it -- the same trick the
 // global shortcuts use -- and the page is left with nothing to do about window geometry.
 std::wstring g_url;
+// How many documents this window has really put on screen. The engine's own "can go back" is true as
+// soon as a page touches its history while it loads -- WhatsApp Web does -- and going back there is a
+// step into the same page, not to anywhere the user has been. From the second document on, going back
+// always means a page that was really there.
+int g_documents = 0;
 std::wstring g_startTarget;  // URL given on the command line, if any
 RECT g_placedRect = {};        // --place x y width height, when a duplicate asks for its spot
 bool g_hasPlacedRect = false;
@@ -584,6 +589,7 @@ void ToggleStartSurface();     // Ctrl+Alt+S: the strip over a page, the start p
 void HideStrip();              // the strip in its own window, shared with WindowProc
 void RepositionStripIfShown(); // the strip follows its window, edge and gap included
 void RefreshStripAddress();    // the strip's field follows the page while the strip stays open
+void RefreshStripHistory();    // ... and so do its back and forward buttons
 void ShowPagePanel(const wchar_t* which);  // options over the page, without leaving it
 void DestroyStrip();
 
@@ -4007,8 +4013,10 @@ void AttachWebView() {
                 g_url = source;
                 CoTaskMemFree(source);
               }
+              ++g_documents;  // a page really landed: from here on, back means somewhere real
               // The strip may be sitting over this page: its field says where the page went.
               RefreshStripAddress();
+              RefreshStripHistory();
               // A new document means the panel that lived in the old one is gone with it.
               g_pagePanel.clear();
             }
@@ -4162,6 +4170,7 @@ void SwitchEngineMode() {
   g_controller->get_ZoomFactor(&g_restoreZoom);
   g_pendingTarget = g_url;
   g_pendingSet = true;
+  g_documents = 0;  // a new engine starts with no history behind it
   g_webview.Reset();
   g_controller->Close();
   g_controller.Reset();
@@ -4526,6 +4535,29 @@ void RefreshStripAddress() {
       L"(function(){var el=document.getElementById('url');"
       L"if(el&&el.style.display!=='none'&&document.activeElement!==el){el.value=" +
       JsLiteral(g_url) + L";}})();";
+  g_stripWebview->ExecuteScript(script.c_str(), nullptr);
+}
+
+// Whether there is anywhere to go: the engine knows, and the strip's two arrows say so instead of
+// promising a step that would do nothing.
+void RefreshStripHistory() {
+  if (!g_stripShown || !g_stripWebview || !g_webview) {
+    return;
+  }
+  BOOL back = FALSE;
+  BOOL forward = FALSE;
+  g_webview->get_CanGoBack(&back);
+  g_webview->get_CanGoForward(&forward);
+  // The first document of a window has nothing behind it, whatever the page did with its own history
+  // while it loaded.
+  if (g_documents < 2) {
+    back = FALSE;
+  }
+  const std::wstring script =
+      std::wstring(
+          L"(function(){var b=document.getElementById('back');var f=document.getElementById('fwd');") +
+      L"if(b){b.disabled=" + std::wstring(back ? L"false" : L"true") +
+      L";}if(f){f.disabled=" + std::wstring(forward ? L"false" : L"true") + L";}})();";
   g_stripWebview->ExecuteScript(script.c_str(), nullptr);
 }
 
@@ -5048,6 +5080,7 @@ void ShowStrip() {
   }
   ShowWindow(g_stripWindow, SW_SHOWNOACTIVATE);
   g_stripShown = true;
+  RefreshStripHistory();  // the page may have moved while the strip was hidden
 }
 
 // Ctrl+Alt+S is a switch on the strip. A window with no page has nothing to put it over, so that one
