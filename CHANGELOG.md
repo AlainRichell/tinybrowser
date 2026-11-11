@@ -1,5 +1,20 @@
 # Novedades
 
+## 1.1.9 - 2026-11-11
+
+- **El clic ya no se lo queda tiny cuando la ventana está sin fijar y la tapa otra.** El programa
+  escucha el mouse en todo el escritorio para poder redimensionar desde cualquier borde, y bastaba
+  con que el punto del clic cayera dentro del rectángulo de tiny —aunque por delante hubiera otra
+  ventana— para tragarse ese clic y convertirlo en un arrastre de borde: la ventana tapada se
+  redimensionaba sola y el clic no llegaba a la aplicación de delante. Ahora el gesto solo empieza
+  si el clic cae de verdad sobre tiny. En las ventanas fijadas no cambia nada, porque nada puede
+  taparlas.
+- **El cursor de redimensionar ya no depende de una clase en `<html>`.** Una web que reescribe esa
+  clase en cada repintado —las que se redibujan solas lo hacen— dejaba los bordes sin cursor hasta
+  sacar el puntero y volver a entrar. El cursor ahora vive en una hoja de estilo propia que la
+  página no toca, y vuelve a ponerse sola si el repintado se la lleva.
+- La versión sube a **1.1.9**.
+
 ## 1.1.8 - 2026-11-05
 
 - **Cada ventana se puede fijar o dejar de fijar, con un botón de chincheta en la tira**, a la

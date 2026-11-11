@@ -429,33 +429,45 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
   // The cursor on the window's edges belongs to the page, because CSS is the one thing the engine
   // obeys: the host cannot set it (the engine's own cursor handling wins), which was measured. The
   // host still owns the drag itself -- over a scrollbar the page never sees the mouse.
+  //
+  // The state is a stylesheet of our own and never a class on <html>: every framework owns that
+  // attribute and rewrites it on each render, and the class was gone before the pointer moved again
+  // (measured: with the class rewritten the resize cursor never came back).
   var cursorStyle = null;
-  function ensureCursorStyle() {
-    if (cursorStyle || !document.head) { return; }
-    cursorStyle = document.createElement("style");
-    // The scrollbar is drawn by the engine itself, so its cursor can only be chosen here: over one
-    // of those strips the page is never told where the pointer is, and the resize cursor used to
-    // vanish exactly there.
-    cursorStyle.textContent =
-      "html.tb-ns,html.tb-ns *,html.tb-ns::-webkit-scrollbar,html.tb-ns ::-webkit-scrollbar{cursor:ns-resize !important}" +
-      "html.tb-ew,html.tb-ew *,html.tb-ew::-webkit-scrollbar,html.tb-ew ::-webkit-scrollbar{cursor:ew-resize !important}" +
-      "html.tb-nwse,html.tb-nwse *,html.tb-nwse::-webkit-scrollbar,html.tb-nwse ::-webkit-scrollbar{cursor:nwse-resize !important}" +
-      "html.tb-nesw,html.tb-nesw *,html.tb-nesw::-webkit-scrollbar,html.tb-nesw ::-webkit-scrollbar{cursor:nesw-resize !important}";
-    document.head.appendChild(cursorStyle);
+  var cursorEdge = "";
+  function applyCursor() {
+    if (!document.head) { return; }
+    if (!cursorStyle) {
+      cursorStyle = document.createElement("style");
+      cursorStyle.id = "tiny-edge-cursor";
+    }
+    if (!cursorStyle.isConnected) { document.head.appendChild(cursorStyle); }
+    if (!cursorEdge) {
+      if (cursorStyle.textContent) { cursorStyle.textContent = ""; }
+      return;
+    }
+    var shape = (cursorEdge === "n" || cursorEdge === "s") ? "ns-resize"
+              : (cursorEdge === "w" || cursorEdge === "e") ? "ew-resize"
+              : (cursorEdge === "nw" || cursorEdge === "se") ? "nwse-resize" : "nesw-resize";
+    // Every element, plus the scrollbar the engine draws itself: over one of those strips the page is
+    // never told where the pointer is, and the resize cursor used to vanish exactly there.
+    var targets = ["html", "html *", "html::-webkit-scrollbar", "html ::-webkit-scrollbar",
+                   "html::-webkit-scrollbar-thumb", "html ::-webkit-scrollbar-thumb"];
+    var out = "";
+    for (var i = 0; i < targets.length; i++) {
+      out += targets[i] + "{cursor:" + shape + " !important}";
+    }
+    if (cursorStyle.textContent !== out) { cursorStyle.textContent = out; }
   }
-  function setEdgeClass(edge) {
-    var root = document.documentElement;
-    var rest = root.className.replace(/\btb-(ns|ew|nwse|nesw)\b/g, "").replace(/\s+/g, " ").trim();
-    if (!edge) { root.className = rest; return; }
-    ensureCursorStyle();
-    var shape = (edge === "n" || edge === "s") ? "tb-ns" : (edge === "w" || edge === "e") ? "tb-ew"
-              : (edge === "nw" || edge === "se") ? "tb-nwse" : "tb-nesw";
-    root.className = (rest ? rest + " " : "") + shape;
-  }
+  // A re-render of the whole document can take the stylesheet with it; the pointer over the edge puts
+  // it back. No timer: while the pointer is anywhere else this costs nothing.
+  document.addEventListener("pointermove", function () {
+    if (cursorEdge && (!cursorStyle || !cursorStyle.isConnected)) { applyCursor(); }
+  }, true);
   // Only the host decides this. It sees the mouse everywhere -- including over a scrollbar, which the
   // page is never told about -- and it knows where the corners reach; the page's own version of that
   // sum could disagree and fight it.
-  window.__tinybrowserSetEdge = setEdgeClass;
+  window.__tinybrowserSetEdge = function (edge) { cursorEdge = edge || ""; applyCursor(); };
 })();)JS";
 
 std::wstring Trim(const std::wstring& text) {
@@ -2288,10 +2300,18 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       return CallNextHookEx(nullptr, code, wparam, lparam);
     }
     if (wparam == WM_LBUTTONDOWN) {
+      // Only a press that really lands on this window is its own. The hook sees the whole desktop,
+      // and an unpinned window can be covered by another one: a click on whatever is in front of it
+      // was swallowed here and became a resize of the hidden window behind, which the user reads as
+      // "it shrinks by itself when I click outside it" and only ever sees without the pin.
+      const HWND pressed = WindowFromPoint(point);
+      if (!pressed || GetAncestor(pressed, GA_ROOT) != g_window) {
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
       // Any press inside the window starts a gesture -- an edge, Alt anywhere, or the grip, which
       // the page reports as deltas -- so the other copies are read once, right here. With the rule
       // off there is nothing to compare against, so the enumeration is skipped entirely.
-      if (g_blockOverlap && InsideWindow(point)) {
+      if (g_blockOverlap) {
         SnapshotNeighbours();
       }
       const int edges = EdgesAt(point);
