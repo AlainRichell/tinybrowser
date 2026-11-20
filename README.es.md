@@ -1,0 +1,306 @@
+# tinybrowser
+
+[English](README.md) · **Español**
+
+<img src="tools/icono.png" width="110" align="right" alt="El icono de tinybrowser: una dona metálica segmentada">
+
+Un navegador de escritorio de **160x90 píxeles**: una ventana sin marco, siempre encima, para
+tener un sitio a la vista mientras trabajás en otra cosa. No es un visor de una URL fija — le
+escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge embebido.
+
+**682.496 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
+se copia a cualquier PC con Windows y anda.
+
+## Usar
+
+- Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima, con
+  el tamaño de la barra: **141x77**, el que hace que la lupa caiga justo encima del botón de cerrar
+  y que la marca tenga el mismo aire arriba que abajo (medido: 0,0 px y 4 px contra 4 px).
+- También acepta una dirección: `tinybrowser.exe es.wikipedia.org` (sirve para accesos directos).
+- Escribís la dirección y Enter. Sin puntos = búsqueda en Google. Al abrir, el cursor ya está en
+  el campo: escribís directo, sin cliquear.
+- Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una
+  esquina" de la página. `Ctrl` + rueda para acercar a mano. La barra y la pantalla inicial no se
+  escalan: sus controles mantienen el mismo tamaño, tenga la ventana el tamaño que tenga.
+- `Ctrl+Alt+S` vuelve a la barra desde cualquier página, `Ctrl+Alt+Z` va atrás, `Ctrl+Alt+D` duplica
+  en otra ventana y `Ctrl+Alt+X` cierra.
+- `Ctrl+Alt+A` arma el gotero: el puntero se vuelve una pipeta y el clic en cualquier parte de la
+  pantalla toma ese color. La punta de la pipeta es exactamente el píxel que se lee, y el bulbo
+  muestra en vivo el color que va a desaparecer. El gotero sigue armado después de cada clic, así que
+  podés tomar **varios colores seguidos** y todos se vuelven transparentes a la vez en **esa**
+  ventana (y en ninguna otra): se ve lo que haya detrás. Volver a tomar un color que ya está
+  transparente lo devuelve a la vista sin tocar los demás, y entran hasta 12. Mientras dura, las
+  barras de scroll (vertical y horizontal) se ocultan: una barra dibujada quedaría encima del
+  agujero. `Escape` o el botón derecho salen del gotero y dejan todo lo elegido como está;
+  `Ctrl+Alt+A` en ese momento también sale, y otra vez `Ctrl+Alt+A` devuelve la ventana a la
+  normalidad, con sus barras.
+- `Ctrl+Alt+C` es todas o ninguna: si hay **al menos una** a la vista las oculta todas, y si no hay
+  ninguna las muestra todas juntas. Con el icono del área de notificaciones activado, ese icono es la
+  otra puerta de vuelta; al volver, la que retoma el teclado es la que estaba en uso.
+- `Ctrl+Alt+W` es **una sola ventana**: oculta la que estás usando y el siguiente `Ctrl+Alt+W` te
+  devuelve esa misma en vez de esconder otra, aunque tengas varias abiertas. Es un conmutador de una
+  a la vez: para esconder, la ventana de tiny tiene que estar en uso; para traerla de vuelta no
+  importa en qué programa estés.
+- El `?` de la barra abre la lista de comandos, encima de todo; se cierra con un clic o `Escape`.
+  La pantalla inicial muestra `tinybrowser 2026` pegada abajo a la derecha.
+- Se agranda y encoge arrastrando cualquier borde o esquina: a menos de 4 píxeles del borde el
+  puntero cambia a las flechas de redimensionar (salvo justo encima de un scrollbar, donde el motor
+  no le pasa el mouse a la página: ahí el borde redimensiona igual, pero el puntero no cambia). El mínimo es **60x60**. Al navegar la ventana pasa
+  al tamaño de página, **160x90**, que es lo que una página necesita para leerse, y vuelve al de la
+  barra cuando la mostrás. Si la redimensionaste a mano, esos cambios no la tocan. Al cambiar el
+  ancho, la página se ajusta sola. El tope para agrandar es el borde de la pantalla, no la barra de
+  tareas: si la ventana está sobre ella, también se redimensiona ahí.
+- Para moverla: la franja punteada arriba de la barra, o `Alt` + arrastrar en cualquier parte
+  (incluso encima de una página cargada). Va a cualquier lado del escritorio, incluso encima de la
+  barra de tareas; el único tope es que no se pierda fuera de la pantalla.
+- Atrás / adelante están en la barra; el `x` de la derecha cierra. Atrás actúa sobre la página que
+  tenías cargada, no sobre la barra. Hasta que no hayas cargado una página, esos botones aparecen
+  apagados: no hay nada sobre qué actuar. El botón de recargar pasó a ser el de **instalación** (ver
+  más abajo); para volver a cargar la página, escribí la dirección otra vez y Enter.
+- Los enlaces que abren pestaña nueva se cargan en la misma ventana.
+- **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
+  pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
+- El botón de las tres líneas con perillas de la barra abre las **opciones** (ver más abajo); el
+  botón de duplicar ya no está, porque en la pantalla inicial no servía: duplicar se hace con el
+  atajo.
+- `Ctrl+Alt+D` abre la página actual en **otra ventana**
+  del mismo tamaño, con **4 px de aire** respecto de las que ya hay y nunca encima de otra, ni por un
+  píxel: si el conjunto tiene un hueco (una L, un cuadrado al que le falta una celda) la nueva cae
+  justo ahí; si no, en el lado libre más cercano a la ventana desde la que duplicaste, prefiriendo lo
+  que deje el grupo rectangular antes que una fila larga. Si no queda ningún lugar libre, no abre
+  nada: no hay copias superpuestas. La copia se lleva lo que esa ventana estaba mostrando: los colores
+  transparentados y, si el rango venía de un `.to`, ese rango también.
+- Los atajos actúan sobre la ventana que estás usando cuando hay más de una abierta; con una sola
+  siguen funcionando desde cualquier programa, como antes.
+
+### Instalarlo en el sistema
+
+El botón de la flecha hacia la bandeja (donde estaba recargar) abre el panel de **instalación**. Todo
+se hace en tu carpeta de usuario y en tu cuenta: no pide permisos de administrador.
+
+- **Instalar** copia el exe a `%LOCALAPPDATA%\Unresolute\tinybrowser\tiny.exe`, agrega esa carpeta al
+  PATH del usuario y reasocia los `.to` a esa copia, así el doble clic abre la instalada y no la que
+  estés ejecutando en ese momento. Si ya tenías el icono en el escritorio, lo actualiza. También deja la
+  línea de **Tiny Browser** en Configuración → Aplicaciones instaladas, con su versión y su
+  desinstalador.
+- **Actualizar** es ese mismo botón cuando la copia instalada declara una versión anterior a la del exe
+  que estás corriendo: dice **Actualizar** (o **Reinstalar** si son la misma, **Reemplazar** si la
+  instalada es más nueva) y abajo la línea de versiones, `1.1.0 -> 1.1.1`. La comparación se hace
+  leyendo el recurso de versión de cada exe, no la fecha de los archivos, así que no depende de cómo se
+  copiaron. Se puede actualizar con la ventana vieja abierta: si el `tiny.exe` está en uso se mueve a la
+  carpeta temporal y la copia nueva ocupa su lugar; la ventana que estaba abierta sigue con la versión
+  anterior hasta que la cierres.
+- **Icono en el escritorio** crea `tiny` en el escritorio. Aparece deshabilitado hasta que instales:
+  no hay copia a la que apuntar.
+- **El comando `tiny`**: con la carpeta en el PATH alcanza para que `Win+R` → `tiny` abra una ventana
+  (y lo mismo desde una consola). El Windows que ya estaba abierto tarda en enterarse; un `Win+R`
+  nuevo lo toma al instante.
+- **Quitar** desinstala: saca el PATH, la asociación, el icono, la línea de Aplicaciones instaladas y
+  la carpeta instalada. El perfil de WebView2 (`%LOCALAPPDATA%\tinybrowser`) se queda: ahí están los
+  logins y las cookies de tus páginas. Si estás corriendo justo desde la copia instalada, el `tiny.exe`
+  se mueve a la carpeta temporal (Windows no deja borrar un exe en uso) y podés borrarlo cuando cierres
+  la ventana.
+- Lo mismo hace `tiny.exe --uninstall`, que es lo que corre el desinstalador de Configuración: pregunta
+  antes, no abre ventana y no necesita nada del motor.
+- El panel muestra la versión instalada y la de esta build, y es el estado de la máquina, así que todas
+  las ventanas ven lo mismo.
+- La versión y los nombres viajan en el exe (recurso `VERSIONINFO`): Explorer y la barra de tareas
+  dicen **Tiny Browser** 1.1.1, y el `.to` aparece como *Tiny Browser snapshot*. La versión se cambia en
+  `tinyversion.h`, un solo lugar para el recurso y para el panel.
+
+### Guardar un estado: los archivos `.to`
+
+- `Ctrl+Alt+G` con una página abierta abre el diálogo de guardar y escribe un archivo **`.to`**
+  (*Tiny Browser snapshot*): ahí queda congelado cómo se está viendo esa ventana — la dirección, la posición y
+  el tamaño, el zoom, y los colores que hayas transparentado con su rango.
+- Los `.to` tienen su propio icono en el Explorador: una hoja de papel con el donut de tiny grande en
+  la esquina, distinta del icono del navegador. Lo pone el exe como segundo icono (`id 2`) y la
+  asociación apunta ahí, así que el archivo no se confunde con el programa que lo abre. Sale del
+  dibujo `TinyObjectIcon.png` con `tools/make_icons.py`.
+- Doble clic sobre el `.to` en el Explorador abre tiny con esa ventana tal como estaba, en una
+  ventana nueva. La asociación del `.to` con el exe se hace sola la primera vez que guardás uno y se
+  reafirma en cada arranque, así que mover el exe no la rompe. Si otro programa ya era dueño de `.to`,
+  no se le toca: en ese caso el archivo se abre arrastrándolo sobre `tinybrowser.exe`.
+- `Ctrl+Alt+G` en la pantalla de inicio es la otra mitad: abre el selector de Windows para elegir
+  cuál de los `.to` cargar. Durante esa ejecución el selector vuelve a abrirse en la última carpeta
+  usada; nada de esto se guarda en el archivo de opciones.
+- El archivo es texto (`[tiny]` y una línea por dato): se puede abrir con el Notepad y cambiar la
+  dirección a mano. Los colores transparentados van en una sola línea (`KeyColours`), separados por
+  comas.
+- Dos cosas que conviene saber: el zoom guardado manda mientras esa página esté abierta (aunque
+  redimensiones la ventana; el ajuste automático vuelve al abrir otra dirección en la barra), y el
+  rango del color que trae el `.to` vale **sólo para esa ventana**: no se escribe en
+  `tinybrowser.ini` ni cambia el de las demás ventanas. Si movés el control **Rango del color** en
+  esa ventana, ahí sí pasa a ser el valor compartido, como siempre.
+
+### Cómo funciona la transparencia por color
+
+La ventana no dibuja nada por su cuenta: el motor pinta en un árbol de DirectComposition (hosting por
+composición) y la ventana no tiene superficie GDI, así que lo que se ve es exactamente esa
+composición, con su canal alfa. Por eso el color elegido puede volverse un agujero de verdad.
+
+El filtro va sobre la página entera, no sobre un elemento: cada color elegido se vuelve transparente
+allí donde aparezca, sea el fondo de un div, los píxeles de un GIF o el texto. Es un filtro SVG que
+calcula píxel por píxel la distancia a cada color y la convierte en transparencia, y no necesita leer
+píxeles, así que alcanza igual a GIF animados, videos, canvas e imágenes de otro origen. Cada color
+aporta su propia máscara y las máscaras se multiplican entre sí: un píxel desaparece si coincide con
+cualquiera de ellas, y por eso varios colores se pueden tener transparentes al mismo tiempo sin que
+uno tape al otro.
+
+Y como la base de la página también deja de pintar, el agujero no se queda en el fondo de la página:
+lo que se ve a través es el escritorio. Dicho al revés: si había algo debajo de ese color, también
+desaparece.
+
+La comparación tiene una tolerancia, porque la pantalla puede devolver un color que difiere en una o
+dos unidades del valor que tenía en la página. Ese margen es el control **Rango del color** de las
+opciones: 0 quita sólo el color exacto y cada punto agrega un nivel por canal, hasta 40. Se guarda en
+`tinybrowser.ini` como `KeyRange` y vale para todas las instancias (por defecto 5). Un `.to` puede
+traer el suyo: ese manda sólo en la ventana que lo abrió, sin tocar el archivo ni las demás.
+
+## Opciones
+
+El botón de las tres líneas con perillas, en la barra, abre el panel de opciones (se cierra con un
+clic fuera de los controles o con `Escape`). Son tres interruptores y se guardan en `tinybrowser.ini`,
+al lado del exe, así que valen para todas las ventanas y siguen ahí la próxima vez:
+
+- **No solapar ventanas** (activado de fábrica): ninguna ventana puede quedar encima de otra. Al
+  arrastrarla contra una vecina se detiene a 4 px —cada ventana reserva 2 px de su lado— y en
+  diagonal se desliza por el costado en vez de trabarse. Al agrandarla con un borde pasa lo mismo:
+  el borde se detiene. Las ventanas que ya estaban superpuestas antes de activar la opción se quedan
+  como están; si las separás, ya no se pueden volver a superponer.
+- **Al arrastrar, empujar otras** (apagado de fábrica): en vez de detenerse, la ventana arrastrada
+  corre a la que choca, siempre en ángulos rectos y por el lado que le toca: la empujada sale hacia
+  donde ya está respecto de la otra y por donde menos tiene que moverse, nunca por donde va el mouse.
+  Si choca con varias, se corren en cascada, cada una por su propio lado. Cuando alguna no tiene
+  lugar para correrse, la que arrastraste se detiene como si la opción estuviera apagada. Necesita la opción de arriba: sin "no solapar" no tiene sentido, por eso queda
+  deshabilitada en su lugar mientras aquella está apagada. El redimensionado empuja igual.
+- **Solo en notificaciones** (activado de fábrica): la ventana no ocupa un botón en la barra de tareas
+  y en su lugar queda un icono en el área de notificaciones. Es **un solo icono para toda la app**: el
+  clic izquierdo muestra u oculta todas las ventanas (lo mismo que `Ctrl+Alt+C`) y el clic derecho abre
+  el menú con mostrar/ocultar todas, ventana nueva y salir. Dos cosas que trae el cambio: la ventana
+  tampoco aparece en `Alt+Tab` ni en la vista de tareas, y Windows 11 estrena los iconos nuevos dentro
+  del desplegable `^` del área de notificaciones — hay que arrastrarlo una vez a la vista (o activarlo
+  en Configuración → Personalización → Barra de tareas → Iconos de la bandeja del sistema). Apagado el
+  interruptor, el botón vuelve sin reiniciar.
+- Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
+
+### Contenedor de la ventana
+
+Arriba del panel de opciones está la fila **Contenedor**. No es una opción de la app sino una propiedad
+de la ventana, como la chincheta: un contenedor es un perfil del motor dentro de la misma carpeta de
+datos, así que las cookies, las sesiones, el almacenamiento, la caché, los permisos y el historial
+quedan separados. La misma web puede estar con dos cuentas distintas en dos ventanas al mismo tiempo.
+La ventana que no elige contenedor vive en el perfil **Default**, que es la carpeta de siempre: no hay
+nada que migrar.
+
+- El desplegable lista los contenedores que ya existen; **Nuevo…** pide el nombre ahí mismo (letras,
+  números, espacio y `- _ . ~ # @ $ ( ) +`, hasta 24) y lo crea. Elegir otro recarga la página en ese
+  perfil: la ventana, su tamaño y su zoom se quedan.
+- La línea de la marca, abajo a la derecha de la barra, muestra el contenedor con un punto de color; en
+  Default no muestra nada.
+- El `.to` guarda el contenedor y `Ctrl+Alt+D` duplica dentro del mismo. Desde un acceso directo sirve
+  `tiny.exe --container "Trabajo"`, con o sin dirección detrás.
+- Los nombres viven en la sección `[containers]` de `tinybrowser.ini`. Los datos de cada contenedor son
+  su propia carpeta dentro de `%LOCALAPPDATA%\tinybrowser`: quitar la fila del `.ini` sólo lo saca del
+  menú.
+
+## Requisitos
+
+- Windows 10 u 11, 64 bits.
+- El motor **WebView2** (el mismo de Edge). No va dentro del `.exe`: ya viene en Windows 11 y
+  en la mayoría de los Windows 10, porque viene con Edge. Si faltara, al arrancar sale un
+  cartel que ofrece instalarlo: busca `MicrosoftEdgeWebview2Setup.exe` al lado del `.exe` y lo
+  corre en silencio (~150 KB, copialo si vas a distribuir a PCs viejas), o si no abre la página
+  de descarga de Microsoft.
+
+## Compilar
+
+    build.bat
+
+Necesita **Visual Studio Build Tools 2022 con la carga de C++** (compilador `cl.exe`, `rc.exe` y
+el SDK de Windows). El build es autocontenido: si falta el SDK de WebView2,
+`tools/fetch-sdk.ps1` lo baja de NuGet solo (~10 MB que quedan en `sdk/`, fuera del repo) y
+después compila el código y el icono como recurso. Sale un único `.exe` enlazado estáticamente
+(`/MT`, `/O2`, `/OPT:REF` e `/OPT:ICF`).
+
+## Arranque
+
+La ventana se pinta al instante (~90 ms, con el fondo oscuro) y el motor queda listo en ~0,6 s
+en caliente. La primerísima ejecución tarda más: es el arranque en frío de WebView2 (creación
+del perfil), no del programa.
+
+## Cómo está hecho
+
+| Qué | Dónde |
+| --- | --- |
+| Todo el programa | `tinybrowser.cpp` (Win32 + WebView2) |
+| Iconos | `tinybrowser.ico` y `tiny-file.ico` + `tinybrowser.rc`; se generan con `tools/make_icons.py` desde `TinyBrowserIcon.png` y `TinyObjectIcon.png` |
+| Compilación | `build.bat` |
+| SDK de WebView2 | lo baja `tools/fetch-sdk.ps1` a `sdk/` (NuGet `Microsoft.Web.WebView2` 1.0.4258.31) |
+| Tamaño de la ventana | `kWidth` / `kHeight` |
+| Buscador | `kSearchPrefix` |
+| Atajos | `kHotkeyBar` / `kHotkeyQuit` |
+| Carpeta de datos | `UserDataFolder()` |
+| Ajuste de ancho por página | `FitPageWidth()` / `ApplyFitZoom()` |
+| Mover la ventana | `MoveBy()` (lo disparan la barra y `Alt`+arrastrar) |
+| Icono del área de notificaciones | `AddTrayIcon()` / `ApplyTrayMode()` |
+| Normalizar direcciones | `Normalize()` |
+
+Tres decisiones que explican el resto:
+
+- **WebView2 embebido, no empaquetado.** Meter un motor entero daría un `.exe` de decenas de MB;
+  como el motor ya vive en Windows, el programa son cientos de KB. El precio es el requisito de
+  arriba.
+- **Un solo hilo tocando el motor.** El intento anterior en Python se congelaba (AppHangB1)
+  porque una capa intermedia llamaba a COM desde otro hilo. Acá todas las llamadas a WebView2
+  salen del mismo hilo que el bucle de mensajes.
+- **Los iconos se reducen desde el dibujo original, una entrada por cada medida de Windows.**
+  `tools/make_icons.py` toma los dos PNG y arma cada `.ico` con diez medidas (16, 20, 24, 32, 40,
+  48, 64, 96, 128 y 256 px): Windows no suaviza nada por su cuenta, elige la medida más cercana que
+  el archivo ofrezca y la escala, así que la nitidez está en tener la medida exacta. Cada reducción
+  se hace en alfa premultiplicado, porque reducir un RGBA cuyos píxeles transparentes todavía llevan
+  color arrastra ese color al borde y deja un contorno oscuro sobre fondo blanco. Son ~130 KB por
+  icono: 255 KB más en el exe, el precio de no verse borroso en ninguna vista del Explorador.
+
+## Nitidez a 160 píxeles
+
+La ventana no dibuja más píxeles de los que tiene, así que lo único que se puede pelear es *cómo*
+se dibujan. Lo que quedó aplicado:
+
+- **Antialias gris** (`--disable-lcd-text`, inyectado por `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`):
+  fuera los flecos rojos y azules del ClearType. Medido en la misma página, en los bordes de letra,
+  el desvío medio de color bajó de **30,15 a 9,98** (y lo que queda son los colores propios del sitio).
+- **Letra en píxeles enteros**: en vez de un zoom continuo, se mide la fuente del cuerpo del sitio y
+  se elige el mayor número entero de píxeles físicos que entra en el ancho, de modo que el zoom sea
+  esa división exacta. Así el rasterizador tiene una rejilla donde encajar los trazos en lugar de
+  trabajar con medidas fraccionarias.
+
+Lo que se probó y **no** funciona, con los números:
+
+- **Renderizar al doble y bajar (supersampling)**: en una ventana de tamaño fijo no hay quién
+  reduzca la superficie, así que subir `RasterizationScale` al doble **recorta** en vez de promediar
+  (la página se ve más grande y cortada a la derecha y abajo). Simulado el proceso completo —render
+  al doble y promedio 2x2, mismo contenido, mismo maquetado y mismo tamaño final— el resultado pierde
+  contraste: la luminancia media de los 200 píxeles más oscuros del texto pasa de **9,1** (casi negro)
+  a **124** (gris medio), y los 160 píxeles negros del render directo desaparecen. Es esperable: al
+  promediar, un trazo de un píxel se reparte entre dos y deja de llegar al negro pleno. Más suave,
+  menos nítido.
+- Queda sin explorar la emulación móvil (que cambia qué maquetado sirve el sitio) y el
+  `--font-render-hinting`, probablemente un no-op en Windows, que rasteriza con DirectWrite.
+
+El cálculo del ajuste recorre los elementos de la página, y resolver estilos es lo caro: descarta por
+rectángulo lo que no puede superar al más ancho visto, antes de mirar sus ancestros. Medido en una
+página de 24.667 elementos: **470 ms por pasada, a 65 ms**, con el mismo resultado.
+
+## Estado
+
+Anda: navegar, buscar, atrás/adelante/recargar, scroll, zoom, arrastre, redimensionado (mínimo
+60x60), varias ventanas a la vez con duplicar la actual en otra, guardar la ventana en un `.to` y volver a abrirla como estaba, atajos, sesiones persistentes,
+icono propio y cierre limpio (sin procesos huérfanos).
+
+Todavía no: historial navegable, autocompletado en la barra, pestañas ni diálogos para elegir el
+perfil. El zoom se reajusta por página, así que una página muy ancha queda con letra chica.
+
+## Licencia
+
+MIT — ver [`LICENSE`](LICENSE).
