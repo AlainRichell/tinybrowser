@@ -83,6 +83,9 @@ constexpr UINT kCommandTrayTake = 15;    // the copy that held the icon is gone:
 constexpr UINT kCommandTrayTip = 16;     // a copy started or closed: the tooltip counts again
 constexpr UINT kCommandHideOne = 17;     // Ctrl+Alt+W: hide this copy
 constexpr UINT kCommandShowOne = 18;     // ... and bring it back
+// This window moved to another container: the engine that has to be replaced is the one asking, so
+// the teardown waits for the message loop instead of running inside the engine's own callback.
+constexpr UINT kCommandContainer = 19;
 // Asked with SendMessage by the copy that owns the chord: the answer is the flag above.
 constexpr UINT kAskHiddenByW = WM_APP + 3;
 // The icon answers on its own message, away from the chords' kHotkeyMessage.
@@ -93,6 +96,9 @@ constexpr UINT kTrayId = 1;  // one icon per window handle, and this app has one
 // The switches are kept in a file next to the exe so every copy starts with the same answers.
 constexpr wchar_t kSettingsFile[] = L"tinybrowser.ini";
 constexpr wchar_t kSettingsSection[] = L"options";
+// The containers the machine has opened, one key each, in the order the menu shows them. The profile
+// itself lives in its folder; this section is only the menu, because WebView2 cannot list profiles.
+constexpr wchar_t kContainersSection[] = L"containers";
 
 constexpr wchar_t kTitle[] = L"tinybrowser";
 constexpr wchar_t kWindowClass[] = L"TinyBrowserWindow";
@@ -164,6 +170,14 @@ ComPtr<ICoreWebView2> g_webview;
 // One browser process serves both engines: the window's and the strip's. The environment is kept
 // from the first creation and reused, instead of starting a second one on the same profile.
 ComPtr<ICoreWebView2Environment> g_environment;
+// The profile this window's engine runs in, empty for the Default one. A container is a profile
+// inside the same data folder -- cookies, storage, cache and history apart -- and not a second
+// browser process. The name is also the profile's folder, so it carries only what a file name takes:
+// see SanitiseContainerName.
+std::wstring g_container;
+// Kept until the create call that asked for it has returned: the engine reads the options after the
+// handler ends, and the next engine replaces it.
+ComPtr<ICoreWebView2ControllerOptions> g_controllerOptions;
 // Resizing and moving the window are driven from HERE, never from the page. Over a scrollbar the
 // engine hands the drag to the scrollbar and the page stops seeing the mouse entirely (measured:
 // no movement arrived, and not even the hover cursor), so a page-side resize cannot cover that
@@ -222,7 +236,10 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
   button:disabled:hover{color:#46586a;background:#141c26}
   kbd{color:#9db2c6;background:#1a2330;border-radius:3px;padding:0 3px;font:inherit}
-  #brand{position:absolute;right:5px;bottom:4px;font-size:9px;letter-spacing:.3px;color:#33455a}
+  #brand{position:absolute;right:5px;bottom:4px;font-size:9px;letter-spacing:.3px;color:#33455a;
+    white-space:nowrap}
+  #brand .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:3px;
+    vertical-align:1px}
   #commands{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:5;padding:4px 6px;
     background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.25;
     color:#9db2c6;overflow:auto}
@@ -234,7 +251,14 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
     background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1;
     color:#9db2c6;overflow:auto}
   #settings[hidden]{display:none}
-  #settings .title{color:#7fb3d5;margin-bottom:1px}
+  #settings .title{display:flex;align-items:center;gap:4px;color:#7fb3d5;margin-bottom:1px}
+  #settings select{flex:0 1 auto;min-width:0;max-width:78px;height:13px;font:inherit;
+    font-size:9px;color:#eaf2f8;background:#060a0f;border:1px solid #2b3644;border-radius:3px;
+    cursor:pointer}
+  #settings select:focus{outline:none;border-color:#4a90c2}
+  #settings #containernew{flex:1 1 auto;min-width:0;height:13px;padding:0 3px;font:inherit;
+    font-size:9px;color:#eaf2f8;background:#060a0f;border:1px solid #4a90c2;border-radius:3px}
+  #settings #containernew:focus{outline:none}
   #settings label{display:flex;align-items:center;gap:4px;margin:0;cursor:pointer}
   #settings input[type=checkbox]{flex:0 0 auto;width:11px;height:11px;margin:0;
     accent-color:#4a90c2;cursor:pointer}
@@ -267,7 +291,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 <div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
 <div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
-<div id="brand">tinybrowser 2026</div>
+<div id="brand">%CONTAINER_BRAND%tinybrowser 2026</div>
 <div id="commands"%COMMANDS_HIDDEN%>
 <div><span class="k">Ctrl+Alt+S</span> barra</div>
 <div><span class="k">Ctrl+Alt+D</span> duplicar</div>
@@ -282,7 +306,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 </div>
 )HTML" LR"HTML(
 <div id="settings"%SETTINGS_HIDDEN%>
-<div class="title">Opciones</div>
+<div class="title">Contenedor<select id="container" title="Contenedor">%CONTAINER_OPTIONS%</select><input id="containernew" type="text" maxlength="24" spellcheck="false" autocomplete="off" placeholder="nombre" hidden></div>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
 <label><input type="checkbox" id="trayonly"%CHECKED_TRAY%><span>Solo en notificaciones</span></label>
@@ -356,6 +380,33 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   var keyRangeValue = document.getElementById("keyrangevalue");
   keyRange.oninput = function () { keyRangeValue.textContent = keyRange.value; };
   keyRange.onchange = function () { send("T" + keyRange.value); };
+
+  // The container menu is the list the host keeps in the options file; a name that is not there yet
+  // is typed on the same line, so the panel never grows and no dialog is needed.
+  var container = document.getElementById("container");
+  var containerNew = document.getElementById("containernew");
+  function leaveNewName() {
+    containerNew.hidden = true;
+    container.hidden = false;
+    containerNew.value = "";
+  }
+  container.onchange = function () {
+    if (container.value !== "*") { send("V" + container.value); return; }
+    container.hidden = true;
+    containerNew.hidden = false;
+    containerNew.focus();
+  };
+  containerNew.onkeydown = function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      var name = containerNew.value.trim();
+      if (name) { send("V" + name); return; }
+      leaveNewName();
+    } else if (e.key === "Escape") {
+      leaveNewName();
+    }
+  };
+  containerNew.onblur = leaveNewName;
 
   // The setup panel: the host does the work (copy the exe, the PATH, the .to association) and rebuilds
   // the bar afterwards, so every label here shows the state the machine is really in.
@@ -610,6 +661,19 @@ void ShowPagePanel(const wchar_t* which);  // options over the page, without lea
 void SetPinned(bool on);       // per window: over every other window, or an ordinary one
 void DestroyStrip();
 
+// Containers: one WebView2 profile per container inside the one data folder. The window's container
+// is a property of the window, like the pin: no option row, no .ini switch, a field in the .to.
+std::wstring SanitiseContainerName(const std::wstring& text);
+bool SameContainer(const std::wstring& left, const std::wstring& right);
+std::vector<std::wstring> ReadContainers();
+std::wstring ContainerOptions();
+std::wstring ContainerBrand();
+COLORREF ContainerColour(const std::wstring& name);
+void RememberContainer(const std::wstring& name);
+void SwitchContainer(const std::wstring& name);
+void TeardownEngine();
+void CreateWebView();
+
 void ShowBar() {
   if (!g_webview) {
     return;
@@ -634,6 +698,10 @@ void ShowBar() {
   wchar_t rangeValue[8] = {};
   wsprintfW(rangeValue, L"%d", g_keyRange);
   ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
+  // Which container this window is in: the brand line says it with a dot, and the options panel
+  // lists the ones the machine already knows.
+  ReplaceToken(&html, L"%CONTAINER_BRAND%", ContainerBrand());
+  ReplaceToken(&html, L"%CONTAINER_OPTIONS%", ContainerOptions());
   // Pushing without the rule above it makes no sense, so it is disabled in place, not hidden.
   ReplaceToken(&html, L"%PUSH_DISABLED%", g_blockOverlap ? L"" : L" disabled");
   // The setup panel speaks about the machine, not about this window, so every bar reads the same
@@ -1108,6 +1176,17 @@ void HandleHotkey(UINT id, LPARAM data) {
     ApplyTrayMode();  // the icon is free: this copy may be the one to adopt it
   } else if (id == kCommandTrayTip) {
     UpdateTrayTip();
+  } else if (id == kCommandContainer) {
+    // The engine is replaced here and never inside its own callback, which is where the request comes
+    // from. Window, size and zoom stay; the page is reloaded by the new profile.
+    if (g_controller) {
+      g_controller->get_ZoomFactor(&g_restoreZoom);
+      g_pendingTarget = g_url;
+      g_pendingSet = true;
+      g_documents = 0;
+      TeardownEngine();
+      CreateWebView();
+    }
   } else if (id == kHotkeyPick) {
     TogglePicking();
   } else if (id == kCommandPick) {
@@ -1319,6 +1398,151 @@ void SaveSettings() {
   WritePrivateProfileStringW(kSettingsSection, L"StripStays", value, path);
   wsprintfW(value, L"%d", g_keyRange);
   WritePrivateProfileStringW(kSettingsSection, L"KeyRange", value, path);
+}
+
+// A container is a WebView2 profile, and a profile is a folder: this reduces what the user types to
+// what a file name takes, folding the accents instead of rejecting the word. Everything else is
+// dropped, which is why the panel comes back showing the name the window ended up in.
+std::wstring SanitiseContainerName(const std::wstring& text) {
+  std::wstring kept;
+  kept.reserve(text.size());
+  for (wchar_t c : text) {
+    switch (c) {  // the Spanish vowels and n, with their diacritics, as plain letters
+      case 0x00C1: c = L'A'; break;
+      case 0x00C9: c = L'E'; break;
+      case 0x00CD: c = L'I'; break;
+      case 0x00D3: c = L'O'; break;
+      case 0x00DA: c = L'U'; break;
+      case 0x00DC: c = L'U'; break;
+      case 0x00D1: c = L'N'; break;
+      case 0x00E1: c = L'a'; break;
+      case 0x00E9: c = L'e'; break;
+      case 0x00ED: c = L'i'; break;
+      case 0x00F3: c = L'o'; break;
+      case 0x00FA: c = L'u'; break;
+      case 0x00FC: c = L'u'; break;
+      case 0x00F1: c = L'n'; break;
+      default: break;
+    }
+    const bool digit = c >= L'0' && c <= L'9';
+    const bool letter = (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+    // The symbols a profile name accepts besides letters, digits and the space.
+    const bool symbol = c == L'#' || c == L'@' || c == L'$' || c == L'(' || c == L')' ||
+                        c == L'+' || c == L'-' || c == L'_' || c == L'~' || c == L'.';
+    if (digit || letter || symbol || c == L' ') {
+      kept += c;
+    }
+  }
+  const size_t first = kept.find_first_not_of(L' ');
+  if (first == std::wstring::npos) {
+    return std::wstring();
+  }
+  kept.erase(0, first);
+  // A file name may not end in a space or a dot, and the folder name is a file name before anything.
+  while (!kept.empty() && (kept.back() == L' ' || kept.back() == L'.')) {
+    kept.pop_back();
+  }
+  if (kept.size() > 64) {
+    kept.resize(64);
+  }
+  // "Default" is what the empty name already means, and a container by that name would ask the engine
+  // for the same folder under another label: it folds back to no container at all.
+  if (lstrcmpiW(kept.c_str(), L"Default") == 0) {
+    return std::wstring();
+  }
+  return kept;
+}
+
+// Profile names are file names: Windows matches them without case, so two names that differ only there
+// are one container and the engine opens the same folder for both.
+bool SameContainer(const std::wstring& left, const std::wstring& right) {
+  return lstrcmpiW(left.c_str(), right.c_str()) == 0;
+}
+
+// The menu lives in the options file because WebView2 cannot list its profiles: a name is opened or
+// created by the first engine that asks for it, so the file is only what the panel shows.
+std::vector<std::wstring> ReadContainers() {
+  std::vector<std::wstring> names;
+  wchar_t path[MAX_PATH] = {};
+  SettingsPath(path);
+  if (!path[0]) {
+    return names;
+  }
+  wchar_t section[8192] = {};
+  const DWORD copied =
+      GetPrivateProfileSectionW(kContainersSection, section, ARRAYSIZE(section), path);
+  if (copied == 0) {
+    return names;
+  }
+  for (const wchar_t* at = section; *at; at += std::wcslen(at) + 1) {
+    const std::wstring line(at);
+    const std::wstring name = SanitiseContainerName(line.substr(0, line.find(L'=')));
+    if (!name.empty() && std::find(names.begin(), names.end(), name) == names.end()) {
+      names.push_back(name);
+    }
+  }
+  return names;
+}
+
+// The value is never read: the key is the name and the line order is the menu's order.
+void RememberContainer(const std::wstring& name) {
+  if (name.empty()) {
+    return;
+  }
+  wchar_t path[MAX_PATH] = {};
+  SettingsPath(path);
+  if (!path[0]) {
+    return;
+  }
+  WritePrivateProfileStringW(kContainersSection, name.c_str(), L"1", path);
+}
+
+// Firefox gives each container a colour, and the dot beside the name is how a window says which jar
+// its page is in. Deriving it from the name keeps that answer the same in every window and stores
+// nothing.
+COLORREF ContainerColour(const std::wstring& name) {
+  static const COLORREF palette[] = {
+      RGB(0x37, 0xAD, 0xFF), RGB(0x00, 0xC7, 0x9A), RGB(0x51, 0xCD, 0x00), RGB(0xFF, 0xCB, 0x00),
+      RGB(0xFF, 0x9F, 0x00), RGB(0xFF, 0x61, 0x3D), RGB(0xFF, 0x4B, 0xDA), RGB(0xAF, 0x51, 0xF5)};
+  unsigned hash = 0;
+  for (wchar_t c : name) {
+    hash = hash * 31u + (unsigned)(c >= L'a' && c <= L'z' ? c - L'a' + L'A' : c);
+  }
+  return palette[hash % ARRAYSIZE(palette)];
+}
+
+// The menu of the options panel, in the file's order. A .to can name a container that was never added
+// here -- the engine opens a profile by asking for it -- so the window's own name is listed too,
+// instead of the menu pretending the window is in Default.
+std::wstring ContainerOptions() {
+  std::wstring html = L"<option value=\"\">Default</option>";
+  const std::vector<std::wstring> names = ReadContainers();
+  bool listed = g_container.empty();
+  for (const std::wstring& name : names) {
+    const bool here = SameContainer(name, g_container);
+    listed = listed || here;
+    html += L"<option value=\"" + EscapeAttribute(name) + L"\"" + (here ? L" selected" : L"") +
+            L">" + EscapeAttribute(name) + L"</option>";
+  }
+  if (!listed) {
+    html += L"<option value=\"" + EscapeAttribute(g_container) + L"\" selected>" +
+            EscapeAttribute(g_container) + L"</option>";
+  }
+  html += L"<option value=\"*\">Nuevo&hellip;</option>";
+  return html;
+}
+
+// The brand line of the bar: the dot and the name, and nothing at all in Default -- which is every
+// window that never asked for a container.
+std::wstring ContainerBrand() {
+  if (g_container.empty()) {
+    return std::wstring();
+  }
+  wchar_t colour[16] = {};
+  const COLORREF dot = ContainerColour(g_container);
+  wsprintfW(colour, L"#%02x%02x%02x", GetRValue(dot), GetGValue(dot), GetBValue(dot));
+  return L"<span class=\"dot\" style=\"background:" + std::wstring(colour) + L"\"></span>" +
+         EscapeAttribute(g_container) + L" &middot; ";
 }
 
 // A switch is app-wide: the other copies pick it up from the file instead of keeping their own.
@@ -2395,6 +2619,14 @@ void OnBarCommand(const std::wstring& message) {
     case L'Y': SetTrayOnly(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
     case L'Q': SetStripStays(message.size() > 1 && message[1] == L'1'); break;
+    // The container menu. A page can post here too (nothing checks the sender, as with X and M), and
+    // moving a page into another identity is the one thing a page must not be able to ask for on its
+    // own: a bar, or a panel the host opened, is the only place this is accepted from.
+    case L'V':
+      if (g_showingBar || g_pagePanel == L"settings") {
+        SwitchContainer(message.substr(1));
+      }
+      break;
     // From the setup panel: install, uninstall and the desktop icon. Whichever surface holds the
     // panel is rebuilt, so it comes back showing what the machine now holds.
     case L'I': DoInstall(); RefreshPanelOrBar(L"setup"); break;
@@ -2663,6 +2895,7 @@ struct TinyState {
   int keyRange = -1;  // -1: the file carries none, so the option stays as it is
   int zoom = 0;       // thousandths of the factor, 0 when none was saved
   int pinned = -1;    // 0 or 1; -1 when the file is older and says nothing, so it stays pinned
+  std::wstring container;  // empty in the Default profile, and in every file older than containers
 };
 
 bool IsStatePath(const std::wstring& text) {
@@ -2756,6 +2989,12 @@ bool ReadState(const std::wstring& path, TinyState* state) {
   // Older snapshots say nothing about the pin: they open pinned, which was the only behaviour then.
   const int pinned = (int)GetPrivateProfileIntW(kStateSection, L"Pinned", (UINT)-1, path.c_str());
   state->pinned = (pinned == 0 || pinned == 1) ? pinned : -1;
+  // A snapshot without Container was taken before containers existed, which is the Default profile. A
+  // name a folder would reject is folded the way the panel folds what the user types.
+  wchar_t container[128] = {};
+  GetPrivateProfileStringW(kStateSection, L"Container", L"", container, ARRAYSIZE(container),
+                           path.c_str());
+  state->container = SanitiseContainerName(container);
   return !state->url.empty();
 }
 
@@ -2781,6 +3020,11 @@ bool WriteState(const std::wstring& path, const TinyState& state) {
   if (state.zoom > 0) {
     wsprintfW(value, L"%d", state.zoom);
     WritePrivateProfileStringW(kStateSection, L"Zoom", value, path.c_str());
+  }
+  // Default writes nothing: a window that never asked for a container saves the same file it always
+  // did, and older builds keep opening it.
+  if (!state.container.empty()) {
+    WritePrivateProfileStringW(kStateSection, L"Container", state.container.c_str(), path.c_str());
   }
   wsprintfW(value, L"%d", state.keyColours.empty() ? 0 : 1);
   WritePrivateProfileStringW(kStateSection, L"Keyed", value, path.c_str());
@@ -3589,8 +3833,23 @@ void ApplyState(const TinyState& state) {
   if (state.pinned >= 0) {
     SetPinned(state.pinned != 0);  // the snapshot's pin, not the one this window had
   }
-  Navigate(state.url);
-  g_stateZoom = state.zoom;  // after Navigate, which clears it: this page keeps the zoom it had
+  // The page lives inside the container, so a snapshot taken in another one is loaded by a new
+  // engine: it travels as the pending target, the same path the engine already uses when it is
+  // recreated -- and the keyed colours above are what that engine is created with.
+  const bool otherContainer = !SameContainer(g_container, state.container);
+  if (otherContainer) {
+    g_container = state.container;
+    RememberContainer(g_container);  // a .to can name a container this machine never opened
+    g_pendingTarget = state.url;
+    g_pendingSet = true;
+    g_restoreZoom = state.zoom > 0 ? state.zoom / 1000.0 : 1.0;
+    g_documents = 0;
+    TeardownEngine();
+    CreateWebView();
+  } else {
+    Navigate(state.url);
+    g_stateZoom = state.zoom;  // after Navigate, which clears it: this page keeps the zoom it had
+  }
   if (state.hasRect) {
     const RECT rect = KeepOnDesktop(state.rect);
     SetWindowPos(g_window, nullptr, rect.left, rect.top, rect.right - rect.left,
@@ -3613,6 +3872,7 @@ void SaveState() {
   state.keyColours = g_keyColours;
   state.keyRange = g_keyRange;
   state.pinned = g_pinned ? 1 : 0;
+  state.container = g_container;  // the copy comes back in the jar it was photographed in
   if (g_controller) {
     double zoom = 1.0;
     if (SUCCEEDED(g_controller->get_ZoomFactor(&zoom))) {
@@ -3864,6 +4124,11 @@ void DuplicateInNewInstance() {
     wchar_t range[16] = {};
     wsprintfW(range, L" --range %d", g_keyRange);
     arguments += range;
+  }
+  // A copy belongs in the container its original is in: leaving it out would drop the copy in Default,
+  // which is the shared jar this window was moved out of.
+  if (!g_container.empty()) {
+    arguments += L" --container \"" + g_container + L"\"";
   }
   arguments += L" \"" + g_url + L"\"";
   ShellExecuteW(nullptr, L"open", exe, arguments.c_str(), nullptr, SW_SHOWNORMAL);
@@ -4121,11 +4386,34 @@ void CreateWebView() {
               return S_OK;
             }
             g_environment = environment;  // the strip reuses it rather than opening a second one
+            // The container this window asked for, as a profile inside the same data folder: asking
+            // for the name is what opens it, or creates it the first time.
+            ComPtr<ICoreWebView2ControllerOptions> options;
+            ComPtr<ICoreWebView2Environment10> environment10;
+            if (!g_container.empty()) {
+              if (FAILED(environment->QueryInterface(IID_PPV_ARGS(&environment10))) ||
+                  !environment10) {
+                ReportFailure(L"ICoreWebView2Environment10", (HRESULT)E_NOINTERFACE);
+                PostMessageW(g_window, WM_CLOSE, 0, 0);
+                return S_OK;
+              }
+              HRESULT made = environment10->CreateCoreWebView2ControllerOptions(&options);
+              if (SUCCEEDED(made)) {
+                made = options->put_ProfileName(g_container.c_str());
+              }
+              if (FAILED(made) || !options) {
+                // Never retried without options: that would open the page in the shared profile,
+                // which is exactly the session a container exists to keep apart.
+                ReportFailure(L"CreateCoreWebView2ControllerOptions", made);
+                PostMessageW(g_window, WM_CLOSE, 0, 0);
+                return S_OK;
+              }
+              g_controllerOptions = options;  // the create call below reads it after this returns
+            }
             if (g_keyColours.empty()) {
               // Hosting con ventana: el motor crea su propia ventana hija y recibe el raton, el
               // teclado y los arrastres de archivos sin intermediarios. Es el modo normal.
-              const HRESULT created = environment->CreateCoreWebView2Controller(
-                  g_window,
+              const ComPtr<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler> ready =
                   Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                       [](HRESULT controllerResult,
                          ICoreWebView2Controller* controller) -> HRESULT {
@@ -4137,8 +4425,13 @@ void CreateWebView() {
                         g_controller = controller;
                         AttachWebView();
                         return S_OK;
-                      })
-                      .Get());
+                      });
+              // Both hostings take the same options: a container that works in the plain window and
+              // not in the keyed one is the classic half-done switch in this file.
+              const HRESULT created =
+                  options ? environment10->CreateCoreWebView2ControllerWithOptions(
+                                g_window, options.Get(), ready.Get())
+                          : environment->CreateCoreWebView2Controller(g_window, ready.Get());
               if (FAILED(created)) {
                 ReportFailure(L"CreateCoreWebView2Controller", created);
                 PostMessageW(g_window, WM_CLOSE, 0, 0);
@@ -4152,29 +4445,39 @@ void CreateWebView() {
               PostMessageW(g_window, WM_CLOSE, 0, 0);
               return S_OK;
             }
-            environment3->CreateCoreWebView2CompositionController(
-                g_window,
-                Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
-                    [](HRESULT controllerResult,
-                       ICoreWebView2CompositionController* composition) -> HRESULT {
-                      if (FAILED(controllerResult) || !composition) {
-                        ReportFailure(L"CreateCoreWebView2CompositionController", controllerResult);
-                        PostMessageW(g_window, WM_CLOSE, 0, 0);
-                        return S_OK;
-                      }
-                      g_composition = composition;
-                      // El controlador de composicion tambien responde a la API del controlador
-                      // -- bounds, visibilidad, zoom, foco -- asi que el resto del archivo no cambia.
-                      if (FAILED(composition->QueryInterface(IID_PPV_ARGS(&g_controller))) ||
-                          !g_controller) {
-                        ReportFailure(L"ICoreWebView2Controller", (HRESULT)E_NOINTERFACE);
-                        PostMessageW(g_window, WM_CLOSE, 0, 0);
-                        return S_OK;
-                      }
-                      AttachWebView();
-                      return S_OK;
-                    })
-                    .Get());
+            const ComPtr<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>
+                composed =
+                    Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
+                        [](HRESULT controllerResult,
+                           ICoreWebView2CompositionController* composition) -> HRESULT {
+                          if (FAILED(controllerResult) || !composition) {
+                            ReportFailure(L"CreateCoreWebView2CompositionController",
+                                          controllerResult);
+                            PostMessageW(g_window, WM_CLOSE, 0, 0);
+                            return S_OK;
+                          }
+                          g_composition = composition;
+                          // El controlador de composicion tambien responde a la API del controlador
+                          // -- bounds, visibilidad, zoom, foco -- asi que el resto del archivo no
+                          // cambia.
+                          if (FAILED(composition->QueryInterface(IID_PPV_ARGS(&g_controller))) ||
+                              !g_controller) {
+                            ReportFailure(L"ICoreWebView2Controller", (HRESULT)E_NOINTERFACE);
+                            PostMessageW(g_window, WM_CLOSE, 0, 0);
+                            return S_OK;
+                          }
+                          AttachWebView();
+                          return S_OK;
+                        });
+            const HRESULT composedStarted =
+                options ? environment10->CreateCoreWebView2CompositionControllerWithOptions(
+                              g_window, options.Get(), composed.Get())
+                        : environment3->CreateCoreWebView2CompositionController(g_window,
+                                                                               composed.Get());
+            if (FAILED(composedStarted)) {
+              ReportFailure(L"CreateCoreWebView2CompositionController", composedStarted);
+              PostMessageW(g_window, WM_CLOSE, 0, 0);
+            }
             return S_OK;
           })
           .Get());
@@ -4209,6 +4512,22 @@ void ApplyEngineStyle() {
   }
 }
 
+// The engine lives inside the window: replacing it -- another hosting mode, another container -- is
+// closing this one and creating the next, which loads whatever g_pendingTarget carries.
+void TeardownEngine() {
+  g_webview.Reset();
+  if (g_controller) {
+    g_controller->Close();
+    g_controller.Reset();
+  }
+  g_composition.Reset();
+  g_dcompRoot.Reset();
+  g_dcompTarget.Reset();
+  g_dcompDevice.Reset();
+  g_pageCursor = nullptr;
+  ApplyEngineStyle();
+}
+
 // Cambiar de hosting es destruir el motor y crear el otro: la pagina vive dentro del motor, asi que
 // se recarga. La ventana no se toca (sitio y tamano se quedan) y el zoom de la pagina se conserva.
 void SwitchEngineMode() {
@@ -4219,16 +4538,32 @@ void SwitchEngineMode() {
   g_pendingTarget = g_url;
   g_pendingSet = true;
   g_documents = 0;  // a new engine starts with no history behind it
-  g_webview.Reset();
-  g_controller->Close();
-  g_controller.Reset();
-  g_composition.Reset();
-  g_dcompRoot.Reset();
-  g_dcompTarget.Reset();
-  g_dcompDevice.Reset();
-  g_pageCursor = nullptr;
-  ApplyEngineStyle();
+  TeardownEngine();
   CreateWebView();
+}
+
+// Another container is another profile: the page lives inside the engine, so it is closed and opened
+// again -- the same shape as Firefox's "reopen in container". Window, size and zoom stay, and the
+// cookies the page had in the container it leaves stay there.
+void SwitchContainer(const std::wstring& name) {
+  const std::wstring wanted = SanitiseContainerName(name);
+  if (SameContainer(g_container, wanted)) {
+    return;
+  }
+  g_container = wanted;
+  RememberContainer(wanted);  // the menu every copy shows comes from the options file
+  if (!g_window) {
+    return;
+  }
+  if (g_showingBar) {
+    g_settingsPanel = true;  // the panel that asked comes back, showing the answer it got
+  }
+  if (!g_controller) {
+    return;  // the engine is still starting, and no panel is reachable before it exists
+  }
+  // The engine is never replaced from here: this runs inside the engine's own message handler, so the
+  // teardown is a command the message loop runs right afterwards.
+  PostMessageW(g_window, kHotkeyMessage, kCommandContainer, 0);
 }
 
 // Without a child window there is nobody else to deliver pointer input: every mouse message is
@@ -4675,6 +5010,13 @@ constexpr wchar_t kPanelStyle[] = LR"CSS(<style>
 #tiny-panel button{font:inherit;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;
   border-radius:4px;padding:1px 4px;cursor:pointer}
 #tiny-panel button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
+#tiny-panel select{font:inherit;color:#eaf2f8;background:#060a0f;border:1px solid #2b3644;
+  border-radius:3px;max-width:110px}
+#tiny-panel select:focus{outline:none;border-color:#4a90c2}
+#tiny-panel input[type=text]{font:inherit;color:#eaf2f8;background:#060a0f;border:1px solid #4a90c2;
+  border-radius:3px;width:90px}
+#tiny-panel input[type=text]:focus{outline:none}
+#tiny-panel .cont{display:flex;align-items:center;gap:4px}
 #tiny-panel .actions{display:flex;gap:3px;margin:2px 0}
 #tiny-panel .actions button{flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 #tiny-panel .note{margin-top:3px;color:#5b6b7d}
@@ -4687,6 +5029,12 @@ std::wstring BuildPagePanelHtml(const std::wstring& which) {
   std::wstring html(kPanelStyle);
   if (which == L"settings") {
     html += L"<div class='title'>Opciones<button class='close' data-cmd='Z'>&#10005;</button></div>";
+    // The same row the bar's panel has: the machine's menu, and a name typed in its place. Changing it
+    // from here reloads the page, because the page is what lives in the container.
+    html += std::wstring(L"<label class='cont'><span>Contenedor</span><select id='tp-container'>") +
+            ContainerOptions() +
+            L"</select><input type='text' id='tp-containernew' maxlength='24' placeholder='nombre' "
+            L"hidden></label>";
     html += std::wstring(L"<label><input type='checkbox' id='tp-nooverlap' data-on='N1' data-off='N0'") +
             (g_blockOverlap ? L" checked" : L"") + L"><span>No solapar ventanas</span></label>";
     html += std::wstring(L"<label><input type='checkbox' id='tp-push' data-on='P1' data-off='P0'") +
@@ -4773,6 +5121,16 @@ void ShowPagePanel(const wchar_t* which) {
       L"if(v){v.textContent=el.value;}};}});"
       L"d.querySelectorAll('[data-cmd]').forEach(function(el){el.onclick=function(){"
       L"var c=el.dataset.cmd;if(c==='Z'){close();}else{post(c);}};});"
+      // The container row: the bar's rule, typed in place, no dialog, and a page that changes
+      // container is reloaded by the host -- this panel goes away with it.
+      L"var cs=d.querySelector('#tp-container'),cn=d.querySelector('#tp-containernew');"
+      L"if(cs&&cn){"
+      L"cs.onchange=function(){if(cs.value!=='*'){post('V'+cs.value);return;}"
+      L"cs.hidden=true;cn.hidden=false;cn.focus();};"
+      L"cn.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();var v=cn.value.trim();"
+      L"if(v){post('V'+v);return;}cn.hidden=true;cs.hidden=false;}"
+      L"else if(e.key==='Escape'){cn.hidden=true;cs.hidden=false;cn.value='';}};"
+      L"cn.onblur=function(){cn.hidden=true;cs.hidden=false;cn.value='';};}"
       // Pushing without the rule above it makes no sense: it is disabled in place, not hidden.
       L"var n=d.querySelector('#tp-nooverlap'),p=d.querySelector('#tp-push');"
       L"if(n&&p){n.onchange=function(){p.disabled=!n.checked;post(n.checked?'N1':'N0');};}"
@@ -5226,9 +5584,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   // after moving the exe, double-clicking one of those files still opens this build.
   EnsureAssociation();
   WriteUninstallEntry();  // the version Settings shows follows the copy that is installed
-  // Options in front of the address, all optional and only sent by a duplicate: --place x y width
-  // height (the spot it was given), --key (the colours it had keyed, as the same decimal list the .to
-  // files use) and --range (its margin, only when that one was not the app-wide value).
+  // Options in front of the address, all optional: --place x y width height (the spot a duplicate was
+  // given), --key (the colours it had keyed, as the same decimal list the .to files use), --range (its
+  // margin, only when that one was not the app-wide value) and --container (the profile it runs in,
+  // quoted because a name may carry a space).
   std::wstring rest = arguments;
   while (StartsWith(rest, L"--")) {
     const size_t gap = rest.find(L' ');
@@ -5265,6 +5624,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       g_keyRangeLocal = true;  // the margin of the window that was duplicated, not this one's
       const size_t end = rest.find(L' ');
       rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
+    } else if (option == L"--container") {
+      // Quoted by whoever sends it, because a container name may carry a space.
+      std::wstring name;
+      if (!rest.empty() && rest.front() == L'"') {
+        const size_t close = rest.find(L'"', 1);
+        name = rest.substr(1, close == std::wstring::npos ? std::wstring::npos : close - 1);
+        rest = close == std::wstring::npos ? std::wstring() : Trim(rest.substr(close + 1));
+      } else {
+        const size_t end = rest.find(L' ');
+        name = end == std::wstring::npos ? rest : rest.substr(0, end);
+        rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
+      }
+      g_container = SanitiseContainerName(name);
     } else {
       break;
     }
@@ -5286,6 +5658,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       }
       g_stateZoom = state.zoom;
       g_keyColours = state.keyColours;
+      // The window is created in the container the file carries, so the engine it starts with is
+      // already that profile and nothing has to be reloaded afterwards.
+      g_container = state.container;
       if (state.pinned >= 0) {
         g_pinned = state.pinned != 0;  // the window is created with the pin the file carries
       }
@@ -5303,6 +5678,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (!g_startTarget.empty()) {
     g_url = Normalize(g_startTarget);
   }
+  // A window opened straight into a container -- by --container or by a .to -- puts that name in the
+  // menu, so the other windows pick it from their panel instead of retyping it.
+  RememberContainer(g_container);
 
   const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(com)) {

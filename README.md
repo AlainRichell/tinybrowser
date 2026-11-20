@@ -182,6 +182,26 @@ al lado del exe, así que valen para todas las ventanas y siguen ahí la próxim
   interruptor, el botón vuelve sin reiniciar.
 - Cookies y sesiones viven en `%LOCALAPPDATA%\tinybrowser`, así que los logins persisten.
 
+### Contenedor de la ventana
+
+Arriba del panel de opciones está la fila **Contenedor**. No es una opción de la app sino una propiedad
+de la ventana, como la chincheta: un contenedor es un perfil del motor dentro de la misma carpeta de
+datos, así que las cookies, las sesiones, el almacenamiento, la caché, los permisos y el historial
+quedan separados. La misma web puede estar con dos cuentas distintas en dos ventanas al mismo tiempo.
+La ventana que no elige contenedor vive en el perfil **Default**, que es la carpeta de siempre: no hay
+nada que migrar.
+
+- El desplegable lista los contenedores que ya existen; **Nuevo…** pide el nombre ahí mismo (letras,
+  números, espacio y `- _ . ~ # @ $ ( ) +`, hasta 24) y lo crea. Elegir otro recarga la página en ese
+  perfil: la ventana, su tamaño y su zoom se quedan.
+- La línea de la marca, abajo a la derecha de la barra, muestra el contenedor con un punto de color; en
+  Default no muestra nada.
+- El `.to` guarda el contenedor y `Ctrl+Alt+D` duplica dentro del mismo. Desde un acceso directo sirve
+  `tiny.exe --container "Trabajo"`, con o sin dirección detrás.
+- Los nombres viven en la sección `[containers]` de `tinybrowser.ini`. Los datos de cada contenedor son
+  su propia carpeta dentro de `%LOCALAPPDATA%\tinybrowser`: quitar la fila del `.ini` sólo lo saca del
+  menú.
+
 ## Requisitos
 
 - Windows 10 u 11, 64 bits.

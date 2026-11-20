@@ -4,6 +4,9 @@ tinybrowser.exe
 *.res
 *.log
 
+# Opciones de esta máquina: interruptores y la lista de contenedores. Cada instalación escribe la suya
+tinybrowser.ini
+
 # SDK de WebView2: lo baja tools/fetch-sdk.ps1 (14 MB de archivos de Microsoft, no del repo)
 sdk/
 

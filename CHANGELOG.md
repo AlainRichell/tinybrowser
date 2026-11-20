@@ -1,5 +1,22 @@
 # Novedades
 
+## 1.1.10 - 2026-11-20
+
+- **Contenedores: una ventana puede tener todos sus datos aparte.** Cada ventana puede vivir en un
+  contenedor con nombre, y el contenedor es un perfil del motor dentro de la misma carpeta de datos:
+  cookies, sesiones, almacenamiento, caché, permisos e historial quedan separados, así que dos cuentas
+  de Google pueden estar abiertas al mismo tiempo sin verse entre sí. No cuesta un navegador extra por
+  contenedor, que es lo que costaría una carpeta de datos aparte.
+- El contenedor se elige en el panel de Opciones —con la lista de los que ya existen y un nombre nuevo
+  escrito en la misma línea— o desde el panel sobre la página. Cambiarlo recarga esa página en el otro
+  perfil; la ventana, su tamaño y su zoom se quedan.
+- La línea de la marca de la barra muestra el contenedor con su punto de color (nada en el perfil
+  Default), el `.to` lo guarda y Ctrl+Alt+D duplica dentro del mismo contenedor. Desde un acceso
+  directo también sirve `tiny.exe --container Trabajo`.
+- Las ventanas que no eligen contenedor siguen en el perfil Default, que es la carpeta de siempre: no
+  hay nada que migrar y no se pierde ninguna sesión.
+- La versión sube a **1.1.10**.
+
 ## 1.1.9 - 2026-11-11
 
 - **El clic ya no se lo queda tiny cuando la ventana está sin fijar y la tapa otra.** El programa
