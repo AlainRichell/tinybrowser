@@ -11,7 +11,9 @@ any Windows PC and it runs.
 
 [Español](README.es.md) · [Changelog](CHANGELOG.md) · [What's left](SUGGESTIONS.md)
 
-![A GitHub page inside a 160×90 tinybrowser window](docs/page.png)
+![tinybrowser: the window slides to the middle, the eyedropper takes the page's dark blue away and leaves the cat on the desktop, the window is saved as a snapshot and reopened from the desktop, and the cat multiplies across the screen](docs/demo.gif)
+
+*The full sequence, 46 seconds: [docs/demo.mp4](docs/demo.mp4).*
 
 ## Why
 

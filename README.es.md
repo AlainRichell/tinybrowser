@@ -11,6 +11,10 @@ escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge e
 **682.496 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
+![tinybrowser: la ventana se va al centro, el gotero le saca el azul oscuro a la página y deja el gato sobre el escritorio, la ventana se guarda como snapshot y se reabre desde el escritorio, y el gato se multiplica por la pantalla](docs/demo.gif)
+
+*La secuencia completa, 46 s: [docs/demo.mp4](docs/demo.mp4).*
+
 ## Usar
 
 - Doble clic en `tinybrowser.exe`. Abre pegada a la esquina inferior derecha, siempre encima, con
