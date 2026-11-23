@@ -718,14 +718,20 @@ int CornerRadiusPx() {
 }
 
 // The window's shape, in window coordinates: the whole rectangle at 0, a rounded rectangle after.
-// The system owns the region once SetWindowRgn takes it, so it is never deleted here.
+// The system owns the region once SetWindowRgn takes it, so it is never deleted here. The last shape
+// is remembered: a resize redraws the same region many times, and SetWindowRgn invalidates the whole
+// window even when the answer has not changed.
+bool g_hasCornerRegion = false;
+int g_cornerRegionRadius = 0;
+int g_cornerRegionWidth = 0;
+int g_cornerRegionHeight = 0;
+
 void ApplyCornerRegion() {
   if (!g_window) {
     return;
   }
-  const int radius = CornerRadiusPx();
-  if (radius <= 0) {
-    SetWindowRgn(g_window, nullptr, TRUE);
+  // The common case is a square window: nothing to measure and nothing to clear.
+  if (g_cornerRadius <= 0 && !g_hasCornerRegion) {
     return;
   }
   RECT client = {};
@@ -734,9 +740,29 @@ void ApplyCornerRegion() {
   }
   const int width = client.right - client.left;
   const int height = client.bottom - client.top;
+  const int radius = CornerRadiusPx();
+  if (radius <= 0) {
+    if (g_hasCornerRegion) {
+      SetWindowRgn(g_window, nullptr, TRUE);
+      g_hasCornerRegion = false;
+    }
+    return;
+  }
+  if (g_hasCornerRegion && radius == g_cornerRegionRadius && width == g_cornerRegionWidth &&
+      height == g_cornerRegionHeight) {
+    return;
+  }
   HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-  if (region) {
-    SetWindowRgn(g_window, region, TRUE);
+  if (!region) {
+    return;
+  }
+  if (SetWindowRgn(g_window, region, TRUE)) {
+    g_hasCornerRegion = true;
+    g_cornerRegionRadius = radius;
+    g_cornerRegionWidth = width;
+    g_cornerRegionHeight = height;
+  } else {
+    DeleteObject(region);  // the system did not take it
   }
 }
 
