@@ -8,7 +8,7 @@ Un navegador de escritorio de **160x90 píxeles**: una ventana sin marco, siempr
 tener un sitio a la vista mientras trabajás en otra cosa. No es un visor de una URL fija — le
 escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge embebido.
 
-**687.104 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
+**688.640 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
 ![tinybrowser: la ventana se va al centro, el gotero le saca el azul oscuro a la página y deja el gato sobre el escritorio, la ventana se guarda como snapshot y se reabre desde el escritorio, y el gato se multiplica por la pantalla](docs/demo.gif)
@@ -64,7 +64,11 @@ se copia a cualquier PC con Windows y anda.
   tenías cargada, no sobre la barra. Hasta que no hayas cargado una página, esos botones aparecen
   apagados: no hay nada sobre qué actuar. El botón de recargar pasó a ser el de **instalación** (ver
   más abajo); para volver a cargar la página, escribí la dirección otra vez y Enter.
-- Los enlaces que abren pestaña nueva se cargan en la misma ventana.
+- Los enlaces que abren pestaña nueva se cargan en la misma ventana. Con **Ctrl+clic** en un enlace
+  se abre otra ventana de tiny con ese enlace: mismo tamaño y 4 px de aire, en el primer hueco libre
+  al lado (el mismo reparto que `Ctrl+Alt+D`), en el mismo contenedor y con las mismas esquinas. La
+  ventana nueva arranca limpia, sin los colores transparentados de la original. Si no hay hueco libre
+  no se abre nada; los enlaces que no son `http`/`https` tampoco.
 - **Se pueden abrir varias ventanas a la vez**, cada una independiente, para repartirlas por la
   pantalla. Comparten el perfil, así que los logins y las cookies valen para todas.
 - El botón de las tres líneas con perillas de la barra abre las **opciones** (ver más abajo); el

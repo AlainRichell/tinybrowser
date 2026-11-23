@@ -201,6 +201,12 @@ POINT g_lastMove = {};         // pointer position of the previous step: a step 
                                // window held back by a neighbour never stores up distance
 bool g_dragActive = false;     // a hook-driven drag is in progress
 bool g_dragMoves = false;      // ... and it moves the window instead of resizing it (Alt)
+// A real Ctrl+click landed on this window, and the page has not answered yet. The engine turns that
+// gesture into NewWindowRequested; the flag is what tells a link the user asked for from a page
+// calling window.open on its own, and it is spent on the first answer.
+bool g_ctrlClickArmed = false;
+ULONGLONG g_ctrlClickTick = 0;
+constexpr ULONGLONG kCtrlClickWindow = 1500;  // milliseconds between the press and its answer
 bool g_showingBar = false;     // the document on screen is our own bar, not a page
 bool g_setupPanel = false;     // one-shot: the next bar comes up with the setup panel open
 bool g_settingsPanel = false;  // ... and the same for the options panel, opened from the strip
@@ -484,7 +490,12 @@ constexpr wchar_t kPageScript[] = LR"JS((function () {
   }
   document.addEventListener("click", function (e) {
     var link = e.target && e.target.closest ? e.target.closest("a") : null;
-    if (link && (link.target || "").toLowerCase() === "_blank") { link.target = "_self"; }
+    // A plain click on target=_blank stays in this window. Ctrl+click is the gesture that becomes
+    // another tiny window, so the host's NewWindowRequested handler has to see it: rewriting the
+    // target here would turn it into an ordinary navigation.
+    if (link && !e.ctrlKey && (link.target || "").toLowerCase() === "_blank") {
+      link.target = "_self";
+    }
   }, true);
   document.addEventListener("keydown", function (e) {
     if (e.ctrlKey && e.altKey && (e.key === "s" || e.key === "S")) {
@@ -546,6 +557,12 @@ std::wstring Trim(const std::wstring& text) {
 
 bool StartsWith(const std::wstring& text, const std::wstring& prefix) {
   return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+}
+
+// The only schemes a link may hand to a new window: a separate process has to be able to load it as
+// a page. javascript:, mailto:, blob:, data: and file: stay in the window that had them.
+bool IsWebAddress(const wchar_t* text) {
+  return text && (_wcsnicmp(text, L"http://", 7) == 0 || _wcsnicmp(text, L"https://", 8) == 0);
 }
 
 std::wstring EncodeQuery(const std::wstring& text) {
@@ -2651,6 +2668,17 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       if (!pressed || GetAncestor(pressed, GA_ROOT) != g_window) {
         return CallNextHookEx(nullptr, code, wparam, lparam);
       }
+      // Ctrl+click is the one gesture the page cannot claim for itself: the engine reports it as a
+      // new window, and the host is the one that decides where that window goes. Arm on the press,
+      // so a page calling window.open without a real click finds nothing to spend.
+      const bool ctrlDown =
+          GetAsyncKeyState(VK_LCONTROL) < 0 || GetAsyncKeyState(VK_RCONTROL) < 0;
+      if (ctrlDown) {
+        g_ctrlClickArmed = true;
+        g_ctrlClickTick = GetTickCount64();
+      } else {
+        g_ctrlClickArmed = false;
+      }
       // Any press inside the window starts a gesture -- an edge, Alt anywhere, or the grip, which
       // the page reports as deltas -- so the other copies are read once, right here. With the rule
       // off there is nothing to compare against, so the enumeration is skipped entirely.
@@ -4225,11 +4253,12 @@ bool FindDuplicateSpot(RECT* spot, int gap) {
   return true;
 }
 
-// A duplicate is the same window somewhere else: it opens the same page in the first gap the group
-// layout leaves free, in that window's size, and carrying what that window was showing -- the colours
-// it had keyed and, when the margin came from a .to, that margin too. The address goes last, quoted.
-void DuplicateInNewInstance() {
-  if (!g_window || g_url.empty()) {
+// A new window somewhere else: it opens the address it is given in the first gap the group layout
+// leaves free, in this window's size, carrying the container and the corners. A duplicate also
+// carries what the window was showing -- the colours it had keyed and, when the margin came from a
+// .to, that margin too; a link opens clean. The address goes last, quoted.
+void OpenNewInstance(const std::wstring& url, bool carryKey) {
+  if (!g_window || url.empty()) {
     return;
   }
   wchar_t exe[MAX_PATH] = {};
@@ -4250,7 +4279,7 @@ void DuplicateInNewInstance() {
   wsprintfW(numbers, L"--place %d %d %d %d", spot.left, spot.top, spot.right - spot.left,
             spot.bottom - spot.top);
   std::wstring arguments(numbers);
-  if (!g_keyColours.empty()) {
+  if (carryKey && !g_keyColours.empty()) {
     arguments += L" --key ";
     for (size_t i = 0; i < g_keyColours.size(); ++i) {
       wchar_t colour[16] = {};
@@ -4260,7 +4289,7 @@ void DuplicateInNewInstance() {
   }
   // Only when it is not the app-wide one: otherwise the copy reads the same number from the options
   // file, and marking it local would freeze it there for no reason.
-  if (g_keyRangeLocal) {
+  if (carryKey && g_keyRangeLocal) {
     wchar_t range[16] = {};
     wsprintfW(range, L" --range %d", g_keyRange);
     arguments += range;
@@ -4276,8 +4305,16 @@ void DuplicateInNewInstance() {
     wsprintfW(corners, L" --radius %d", g_cornerRadius);
     arguments += corners;
   }
-  arguments += L" \"" + g_url + L"\"";
+  arguments += L" \"" + url + L"\"";
   ShellExecuteW(nullptr, L"open", exe, arguments.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+// Ctrl+Alt+D: the same page, with the colours and the margin it was showing.
+void DuplicateInNewInstance() {
+  if (g_url.empty()) {
+    return;
+  }
+  OpenNewInstance(g_url, true);
 }
 
 
@@ -4452,8 +4489,22 @@ void AttachWebView() {
       Callback<ICoreWebView2NewWindowRequestedEventHandler>(
           [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
             LPWSTR uri = nullptr;
+            // Ctrl+click is the one that becomes another window. A page that calls window.open on
+            // its own finds the flag empty, so it keeps today's behaviour: the page changes in place.
+            const bool ctrlClick =
+                g_ctrlClickArmed && GetTickCount64() - g_ctrlClickTick <= kCtrlClickWindow;
+            g_ctrlClickArmed = false;  // one window per real gesture
             if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
-              Navigate(uri);
+              if (ctrlClick) {
+                // A link the user asked for: another window. A non-web scheme is not another page
+                // (mailto:, blob:, javascript:), so it is left to the engine instead of replacing
+                // this window.
+                if (IsWebAddress(uri)) {
+                  OpenNewInstance(uri, false);  // same size, place, container and corners
+                }
+              } else {
+                Navigate(uri);
+              }
               CoTaskMemFree(uri);
             }
             args->put_Handled(TRUE);

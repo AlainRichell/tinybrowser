@@ -1,5 +1,17 @@
 # Novedades
 
+## 1.1.12 - 2026-11-23
+
+- **Ctrl+clic en un enlace abre otra ventana de tiny.** El enlace se abre en una instancia nueva,
+  del mismo tamaño y en el primer hueco libre al lado (el mismo reparto que `Ctrl+Alt+D`), en el
+  mismo contenedor y con las mismas esquinas. La página nueva arranca limpia: no hereda los colores
+  transparentados de la ventana desde la que hiciste clic.
+- El gesto cuenta solo si el Ctrl+clic fue real. Una página que llame a `window.open` por su cuenta
+  sigue cambiando la ventana actual, como antes; `target="_blank"` con clic normal también.
+- Si no hay hueco libre no se abre nada, igual que al duplicar. Los enlaces que no son `http`/`https`
+  (`mailto:`, `javascript:`, `blob:`) no abren ventana.
+- La versión sube a **1.1.12**.
+
 ## 1.1.11 - 2026-11-23
 
 - **Esquinas redondeadas por ventana.** El panel de Opciones tiene un deslizador **Esquinas** de 0 a

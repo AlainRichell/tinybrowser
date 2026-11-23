@@ -6,7 +6,7 @@
 window that sits in a corner of your desktop over whatever else you are doing. Type an address (or a
 search) and it navigates right there, with the same engine Edge uses.
 
-**687,104 bytes.** One `.exe`. No installer, no Python, no .NET, no VC++ redistributable: copy it to
+**688,640 bytes.** One `.exe`. No installer, no Python, no .NET, no VC++ redistributable: copy it to
 any Windows PC and it runs.
 
 [Español](README.es.md) · [Changelog](CHANGELOG.md) · [What's left](SUGGESTIONS.md)
@@ -23,7 +23,7 @@ window manager gymnastics: it is always on top, it can be pinned per window, and
 every copy when you need the desktop back.
 
 The other half of the idea is weight. Embedding an engine would mean tens of megabytes; WebView2 is
-already part of Windows, so the program itself is a single 687 KB executable written in C++.
+already part of Windows, so the program itself is a single 688 KB executable written in C++.
 
 ## Run it
 
@@ -50,6 +50,11 @@ already part of Windows, so the program itself is a single 687 KB executable wri
 | `Ctrl+Alt+G` | Save this window to a `.to` file, or load one |
 | `Ctrl+Alt+T` | New window, even with tiny closed (a small listener owns this one) |
 | `Ctrl+Alt+X` | Close |
+
+**Ctrl+click a link** opens it in another tiny window beside this one: same size, 4 px of air, same
+container and corners, and no colours keyed — a clean page. If the desktop has no free spot, nothing
+opens, just like duplicating. Plain clicks, `target="_blank"` included, still change the current
+window.
 
 Resize by dragging any edge or corner; the minimum is **60×60**. When a page loads the window goes
 to the page size, **160×90**, and comes back to the bar size when you show the bar — unless you
