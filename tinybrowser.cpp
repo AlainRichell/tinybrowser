@@ -134,6 +134,10 @@ bool g_trayOnly = true;
 // has always done. Unpinned it behaves like any window -- it can be covered. It is not an app option:
 // each window has its own answer, and a .to carries it.
 bool g_pinned = true;
+// Per window, like the pin: 0 leaves the rectangle, 100 rounds every corner as far as the shorter
+// side allows (a capsule), and anything in between is that share of the maximum radius. It is not an
+// app option and nothing is written to the options file; a .to carries it.
+int g_cornerRadius = 0;
 // Option: the floating strip stays where it is after one of its buttons is pressed. On by default;
 // with it off the strip goes away on every press, as it did first.
 bool g_stripStays = true;
@@ -271,6 +275,8 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #settings input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     width:9px;height:9px;margin-top:-2.5px;border-radius:50%;background:#4a90c2}
   #settings .value{flex:0 0 12px;text-align:right;color:#7fb3d5}
+  #settings .inline{cursor:default}
+  #settings .inline input[type=range]{flex:1 1 auto;width:auto;min-width:0}
   #closepanel2{font-size:9px;color:#5b6b7d;margin-top:1px}
   #setup{position:absolute;left:3px;right:3px;top:3px;bottom:3px;z-index:7;padding:3px 5px;
     background:#0c1219;border:1px solid #2b3644;border-radius:4px;font-size:10px;line-height:1.1;
@@ -307,6 +313,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
 )HTML" LR"HTML(
 <div id="settings"%SETTINGS_HIDDEN%>
 <div class="title">Contenedor<select id="container" title="Contenedor">%CONTAINER_OPTIONS%</select><input id="containernew" type="text" maxlength="24" spellcheck="false" autocomplete="off" placeholder="nombre" hidden></div>
+<label class="inline" title="Solo esta ventana"><span>Esquinas</span><input type="range" id="corner" min="0" max="100" step="1" value="%CORNER_RADIUS%"><span class="value" id="cornervalue">%CORNER_RADIUS%</span></label>
 <label><input type="checkbox" id="nooverlap"%CHECKED_OVERLAP%><span>No solapar ventanas</span></label>
 <label><input type="checkbox" id="push"%CHECKED_PUSH%%PUSH_DISABLED%><span>Al arrastrar, empujar otras</span></label>
 <label><input type="checkbox" id="trayonly"%CHECKED_TRAY%><span>Solo en notificaciones</span></label>
@@ -380,6 +387,14 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   var keyRangeValue = document.getElementById("keyrangevalue");
   keyRange.oninput = function () { keyRangeValue.textContent = keyRange.value; };
   keyRange.onchange = function () { send("T" + keyRange.value); };
+  // The corners travel on every step: no file is written and the window only reshapes itself, so the
+  // slider can be seen while it moves.
+  var corner = document.getElementById("corner");
+  var cornerValue = document.getElementById("cornervalue");
+  corner.oninput = function () {
+    cornerValue.textContent = corner.value;
+    send("R" + corner.value);
+  };
 
   // The container menu is the list the host keeps in the options file; a name that is not there yet
   // is typed on the same line, so the panel never grows and no dialog is needed.
@@ -674,6 +689,57 @@ void SwitchContainer(const std::wstring& name);
 void TeardownEngine();
 void CreateWebView();
 
+// How round this window is right now, in physical pixels. The percentage is a share of the largest
+// radius four equal corners can take: half the shorter side, where the arcs meet and the rectangle
+// becomes a capsule. The start bar is capped, because at full rounding its address field and buttons
+// would be cut by the same shape the page wants.
+constexpr int kBarCornerMax = 10;
+
+int CornerRadiusPx() {
+  if (!g_window || g_cornerRadius <= 0) {
+    return 0;
+  }
+  RECT client = {};
+  if (!GetClientRect(g_window, &client)) {
+    return 0;
+  }
+  const int width = client.right - client.left;
+  const int height = client.bottom - client.top;
+  const int shortest = width < height ? width : height;
+  int radius = (shortest * g_cornerRadius + 100) / 200;
+  const int most = shortest / 2;
+  if (radius > most) {
+    radius = most;
+  }
+  if (g_showingBar && radius > kBarCornerMax) {
+    radius = kBarCornerMax;
+  }
+  return radius;
+}
+
+// The window's shape, in window coordinates: the whole rectangle at 0, a rounded rectangle after.
+// The system owns the region once SetWindowRgn takes it, so it is never deleted here.
+void ApplyCornerRegion() {
+  if (!g_window) {
+    return;
+  }
+  const int radius = CornerRadiusPx();
+  if (radius <= 0) {
+    SetWindowRgn(g_window, nullptr, TRUE);
+    return;
+  }
+  RECT client = {};
+  if (!GetClientRect(g_window, &client)) {
+    return;
+  }
+  const int width = client.right - client.left;
+  const int height = client.bottom - client.top;
+  HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+  if (region) {
+    SetWindowRgn(g_window, region, TRUE);
+  }
+}
+
 void ShowBar() {
   if (!g_webview) {
     return;
@@ -698,6 +764,9 @@ void ShowBar() {
   wchar_t rangeValue[8] = {};
   wsprintfW(rangeValue, L"%d", g_keyRange);
   ReplaceToken(&html, L"%KEY_RANGE%", rangeValue);
+  wchar_t corners[8] = {};
+  wsprintfW(corners, L"%d", g_cornerRadius);
+  ReplaceToken(&html, L"%CORNER_RADIUS%", corners);
   // Which container this window is in: the brand line says it with a dot, and the options panel
   // lists the ones the machine already knows.
   ReplaceToken(&html, L"%CONTAINER_BRAND%", ContainerBrand());
@@ -722,6 +791,7 @@ void ShowBar() {
   g_showingBar = true;
   ResetFit();
   ResizeIfCanonical(kBarWidth, kBarHeight);
+  ApplyCornerRegion();  // the bar's own shape, capped so its controls stay inside
   if (g_controller) {
     g_controller->put_ZoomFactor(1.0);  // the bar page is sized for the raw window
   }
@@ -743,6 +813,7 @@ void Navigate(const std::wstring& target) {
   ResetFit();
   SetPageZoomControl(true);
   ResizeIfCanonical(kWidth, kHeight);  // a page needs the room
+  ApplyCornerRegion();                 // ... and the window's full shape, without the bar's cap
   g_webview->Navigate(url.c_str());
 }
 
@@ -2010,7 +2081,29 @@ bool InsideWindow(POINT point) {
   if (!g_window || !GetWindowRect(g_window, &rect)) {
     return false;
   }
-  return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
+  if (point.x < rect.left || point.x >= rect.right || point.y < rect.top || point.y >= rect.bottom) {
+    return false;
+  }
+  // The visible shape, not its bounding box: with rounded corners the clipped corner belongs to
+  // whatever is behind, and the mouse hook must not start a gesture from a piece of desktop.
+  const int radius = CornerRadiusPx();
+  if (radius <= 0) {
+    return true;
+  }
+  const int x = point.x - rect.left;
+  const int y = point.y - rect.top;
+  const int width = rect.right - rect.left;
+  const int height = rect.bottom - rect.top;
+  // A corner is a quarter of the circle centred on the point radius in from each edge; the straight
+  // bands between them are always inside.
+  const int centreX = x < radius ? radius : (x >= width - radius ? width - radius : -1);
+  const int centreY = y < radius ? radius : (y >= height - radius ? height - radius : -1);
+  if (centreX < 0 || centreY < 0) {
+    return true;
+  }
+  const int dx = x - centreX;
+  const int dy = y - centreY;
+  return dx * dx + dy * dy <= radius * radius;
 }
 
 int EdgesAt(POINT point) {
@@ -2618,6 +2711,14 @@ void OnBarCommand(const std::wstring& message) {
     case L'P': SetPushOthers(message.size() > 1 && message[1] == L'1'); break;
     case L'Y': SetTrayOnly(message.size() > 1 && message[1] == L'1'); break;
     case L'T': SetKeyRange(std::wcstol(message.c_str() + 1, nullptr, 10)); break;
+    // Corners are a property of this window, like the pin: the slider changes the shape and nothing
+    // is written anywhere, so it can travel on every step of the drag.
+    case L'R': {
+      const long percent = std::wcstol(message.c_str() + 1, nullptr, 10);
+      g_cornerRadius = (int)(percent < 0 ? 0 : (percent > 100 ? 100 : percent));
+      ApplyCornerRegion();
+      break;
+    }
     case L'Q': SetStripStays(message.size() > 1 && message[1] == L'1'); break;
     // The container menu. A page can post here too (nothing checks the sender, as with X and M), and
     // moving a page into another identity is the one thing a page must not be able to ask for on its
@@ -2895,6 +2996,7 @@ struct TinyState {
   int keyRange = -1;  // -1: the file carries none, so the option stays as it is
   int zoom = 0;       // thousandths of the factor, 0 when none was saved
   int pinned = -1;    // 0 or 1; -1 when the file is older and says nothing, so it stays pinned
+  int radius = -1;    // 0-100; -1 when the file is older and says nothing, so the window stays square
   std::wstring container;  // empty in the Default profile, and in every file older than containers
 };
 
@@ -2989,6 +3091,9 @@ bool ReadState(const std::wstring& path, TinyState* state) {
   // Older snapshots say nothing about the pin: they open pinned, which was the only behaviour then.
   const int pinned = (int)GetPrivateProfileIntW(kStateSection, L"Pinned", (UINT)-1, path.c_str());
   state->pinned = (pinned == 0 || pinned == 1) ? pinned : -1;
+  // Older snapshots say nothing about the corners: the window opens with the rectangle it had.
+  const int radius = (int)GetPrivateProfileIntW(kStateSection, L"Radius", (UINT)-1, path.c_str());
+  state->radius = (radius >= 0 && radius <= 100) ? radius : -1;
   // A snapshot without Container was taken before containers existed, which is the Default profile. A
   // name a folder would reject is folded the way the panel folds what the user types.
   wchar_t container[128] = {};
@@ -3047,6 +3152,10 @@ bool WriteState(const std::wstring& path, const TinyState& state) {
   WritePrivateProfileStringW(kStateSection, L"KeyRange", value, path.c_str());
   wsprintfW(value, L"%d", state.pinned == 0 ? 0 : 1);
   WritePrivateProfileStringW(kStateSection, L"Pinned", value, path.c_str());
+  // Always written, zero included: a snapshot taken square has to come back square. Older builds
+  // ignore the key, and older files without it still open with the shape the window had.
+  wsprintfW(value, L"%d", state.radius);
+  WritePrivateProfileStringW(kStateSection, L"Radius", value, path.c_str());
   return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
@@ -3825,6 +3934,10 @@ void ApplyState(const TinyState& state) {
   if (!g_window || !g_webview || state.url.empty()) {
     return;
   }
+  if (state.radius >= 0) {
+    g_cornerRadius = state.radius;  // the shape is part of what the file froze
+    ApplyCornerRegion();
+  }
   if (state.keyRange >= 0) {
     UseStateKeyRange(state.keyRange);
   }
@@ -3872,6 +3985,7 @@ void SaveState() {
   state.keyColours = g_keyColours;
   state.keyRange = g_keyRange;
   state.pinned = g_pinned ? 1 : 0;
+  state.radius = g_cornerRadius;
   state.container = g_container;  // the copy comes back in the jar it was photographed in
   if (g_controller) {
     double zoom = 1.0;
@@ -4129,6 +4243,12 @@ void DuplicateInNewInstance() {
   // which is the shared jar this window was moved out of.
   if (!g_container.empty()) {
     arguments += L" --container \"" + g_container + L"\"";
+  }
+  // The shape belongs to the window, so the copy is born with the same corners.
+  if (g_cornerRadius > 0) {
+    wchar_t corners[16] = {};
+    wsprintfW(corners, L" --radius %d", g_cornerRadius);
+    arguments += corners;
   }
   arguments += L" \"" + g_url + L"\"";
   ShellExecuteW(nullptr, L"open", exe, arguments.c_str(), nullptr, SW_SHOWNORMAL);
@@ -4510,6 +4630,9 @@ void ApplyEngineStyle() {
     ShowWindow(g_window, SW_HIDE);
     ShowWindow(g_window, SW_SHOWNOACTIVATE);
   }
+  // A new surface keeps the window's shape: the region is not part of the style, but this is the
+  // moment the engine is about to be replaced and the cheapest place to restate it.
+  ApplyCornerRegion();
 }
 
 // The engine lives inside the window: replacing it -- another hosting mode, another container -- is
@@ -4659,6 +4782,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     case WM_ERASEBKGND:
       return 1;  // nothing of our own to paint: the composition is the window
     case WM_SIZE: {
+      ApplyCornerRegion();  // the percentage is of the shorter side, so every new size reshapes it
       if (g_controller) {
         RECT bounds = {};
         GetClientRect(window, &bounds);
@@ -5007,6 +5131,8 @@ constexpr wchar_t kPanelStyle[] = LR"CSS(<style>
 #tiny-panel .range{display:flex;justify-content:space-between;cursor:default}
 #tiny-panel input[type=range]{display:block;width:100%;height:10px;margin:0;accent-color:#4a90c2}
 #tiny-panel .value{color:#7fb3d5}
+#tiny-panel .inline{cursor:default}
+#tiny-panel .inline input[type=range]{flex:1 1 auto;width:auto;min-width:0}
 #tiny-panel button{font:inherit;color:#9db2c6;background:#1a2330;border:1px solid #2b3644;
   border-radius:4px;padding:1px 4px;cursor:pointer}
 #tiny-panel button:disabled{color:#46586a;background:#141c26;border-color:#1e2833;cursor:default}
@@ -5026,9 +5152,16 @@ constexpr wchar_t kPanelStyle[] = LR"CSS(<style>
 std::wstring BuildPagePanelHtml(const std::wstring& which) {
   wchar_t range[8] = {};
   wsprintfW(range, L"%d", g_keyRange);
+  wchar_t corners[8] = {};
+  wsprintfW(corners, L"%d", g_cornerRadius);
   std::wstring html(kPanelStyle);
   if (which == L"settings") {
     html += L"<div class='title'>Opciones<button class='close' data-cmd='Z'>&#10005;</button></div>";
+    // Same row as the bar's panel, and the same per-window meaning.
+    html += std::wstring(
+                L"<label class='inline' title='Solo esta ventana'><span>Esquinas</span>"
+                L"<input type='range' id='tp-corner' min='0' max='100' step='1' value='") +
+            corners + L"'><span class='value' id='tp-cornerval'>" + corners + L"</span></label>";
     // The same row the bar's panel has: the machine's menu, and a name typed in its place. Changing it
     // from here reloads the page, because the page is what lives in the container.
     html += std::wstring(L"<label class='cont'><span>Contenedor</span><select id='tp-container'>") +
@@ -5121,6 +5254,10 @@ void ShowPagePanel(const wchar_t* which) {
       L"if(v){v.textContent=el.value;}};}});"
       L"d.querySelectorAll('[data-cmd]').forEach(function(el){el.onclick=function(){"
       L"var c=el.dataset.cmd;if(c==='Z'){close();}else{post(c);}};});"
+      // The corners travel on every step, like the bar's slider: no file, only the shape.
+      L"var cr=d.querySelector('#tp-corner');"
+      L"if(cr){cr.oninput=function(){post('R'+cr.value);"
+      L"var v=document.getElementById('tp-cornerval');if(v){v.textContent=cr.value;}};}"
       // The container row: the bar's rule, typed in place, no dialog, and a page that changes
       // container is reloaded by the host -- this panel goes away with it.
       L"var cs=d.querySelector('#tp-container'),cn=d.querySelector('#tp-containernew');"
@@ -5586,8 +5723,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   WriteUninstallEntry();  // the version Settings shows follows the copy that is installed
   // Options in front of the address, all optional: --place x y width height (the spot a duplicate was
   // given), --key (the colours it had keyed, as the same decimal list the .to files use), --range (its
-  // margin, only when that one was not the app-wide value) and --container (the profile it runs in,
-  // quoted because a name may carry a space).
+  // margin, only when that one was not the app-wide value), --radius (the corners it had, 0-100) and
+  // --container (the profile it runs in, quoted because a name may carry a space).
   std::wstring rest = arguments;
   while (StartsWith(rest, L"--")) {
     const size_t gap = rest.find(L' ');
@@ -5622,6 +5759,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       const long value = std::wcstol(rest.c_str(), nullptr, 10);
       g_keyRange = (int)(value < 0 ? 0 : (value > kKeyRangeMax ? kKeyRangeMax : value));
       g_keyRangeLocal = true;  // the margin of the window that was duplicated, not this one's
+      const size_t end = rest.find(L' ');
+      rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
+    } else if (option == L"--radius") {
+      const long value = std::wcstol(rest.c_str(), nullptr, 10);
+      g_cornerRadius = (int)(value < 0 ? 0 : (value > 100 ? 100 : value));
       const size_t end = rest.find(L' ');
       rest = end == std::wstring::npos ? std::wstring() : Trim(rest.substr(end + 1));
     } else if (option == L"--container") {
@@ -5663,6 +5805,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
       g_container = state.container;
       if (state.pinned >= 0) {
         g_pinned = state.pinned != 0;  // the window is created with the pin the file carries
+      }
+      if (state.radius >= 0) {
+        g_cornerRadius = state.radius;  // ... and with the shape it carries
       }
       if (state.keyRange >= 0) {
         UseStateKeyRange(state.keyRange);  // the snapshot's margin, not the app's
@@ -5739,6 +5884,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   if (!g_window) {
     return 1;
   }
+  // Before the first show, so the window is never painted as a rectangle for a frame.
+  ApplyCornerRegion();
 
   // WM_SETICON as well as the class icons: the taskbar reads the message, the class icons
   // only cover the window itself.

@@ -8,7 +8,7 @@ Un navegador de escritorio de **160x90 píxeles**: una ventana sin marco, siempr
 tener un sitio a la vista mientras trabajás en otra cosa. No es un visor de una URL fija — le
 escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge embebido.
 
-**682.496 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
+**687.104 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
 ![tinybrowser: la ventana se va al centro, el gotero le saca el azul oscuro a la página y deja el gato sobre el escritorio, la ventana se guarda como snapshot y se reabre desde el escritorio, y el gato se multiplica por la pantalla](docs/demo.gif)
@@ -23,6 +23,9 @@ se copia a cualquier PC con Windows y anda.
 - También acepta una dirección: `tinybrowser.exe es.wikipedia.org` (sirve para accesos directos).
 - Escribís la dirección y Enter. Sin puntos = búsqueda en Google. Al abrir, el cursor ya está en
   el campo: escribís directo, sin cliquear.
+- El `.exe` **no está firmado**, así que la primera vez Windows muestra SmartScreen ("Windows protegió
+  tu PC"): *Más información → Ejecutar de todas formas*. El código está acá y `build.bat` compila el
+  mismo binario.
 - Cada página se escala sola para que entre a lo ancho: con 90 px de alto, sin eso verías "una
   esquina" de la página. `Ctrl` + rueda para acercar a mano. La barra y la pantalla inicial no se
   escalan: sus controles mantienen el mismo tamaño, tenga la ventana el tamaño que tenga.
@@ -207,6 +210,16 @@ nada que migrar.
 - Los nombres viven en la sección `[containers]` de `tinybrowser.ini`. Los datos de cada contenedor son
   su propia carpeta dentro de `%LOCALAPPDATA%\tinybrowser`: quitar la fila del `.ini` sólo lo saca del
   menú.
+
+### Esquinas de la ventana
+
+El deslizador **Esquinas**, arriba del panel de opciones, redondea las cuatro esquinas de **esa**
+ventana: en 0 queda el rectángulo de siempre y en 100 cada esquina toma el radio máximo que permiten
+cuatro esquinas iguales —la mitad del lado más corto—, así que una ventana de 160x90 queda como una
+cápsula y una de 60x60 como un círculo. La ventana cambia de forma mientras arrastrás el control, sin
+recargar la página. Es una propiedad de la ventana, como la chincheta: cada una tiene la suya, el
+`.to` la guarda y `Ctrl+Alt+D` la copia (desde un acceso directo, `--radius N`). La barra de inicio
+limita su propio radio a 10 px para que el campo de dirección y los botones no queden cortados.
 
 ## Requisitos
 

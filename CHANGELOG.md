@@ -1,5 +1,18 @@
 # Novedades
 
+## 1.1.11 - 2026-11-23
+
+- **Esquinas redondeadas por ventana.** El panel de Opciones tiene un deslizador **Esquinas** de 0 a
+  100: en 0 la ventana sigue siendo el rectángulo de siempre, y en 100 cada esquina toma el radio
+  máximo que permiten cuatro esquinas iguales —la mitad del lado más corto—, así que una ventana de
+  160×90 queda como una cápsula y una de 60×60 como un círculo. Se ve mientras se arrastra, sin
+  recargar la página.
+- Es una propiedad de la ventana, como el pin: cada una tiene la suya, el `.to` la guarda, Ctrl+Alt+D
+  la copia y `tiny.exe --radius N` la abre desde un acceso directo. No se escribe en el `.ini`.
+- La barra de inicio limita su propio radio a 10 px para que el campo de dirección y los botones no
+  queden cortados por la forma.
+- La versión sube a **1.1.11**.
+
 ## 1.1.10 - 2026-11-20
 
 - **Contenedores: una ventana puede tener todos sus datos aparte.** Cada ventana puede vivir en un

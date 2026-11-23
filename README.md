@@ -6,7 +6,7 @@
 window that sits in a corner of your desktop over whatever else you are doing. Type an address (or a
 search) and it navigates right there, with the same engine Edge uses.
 
-**682,496 bytes.** One `.exe`. No installer, no Python, no .NET, no VC++ redistributable: copy it to
+**687,104 bytes.** One `.exe`. No installer, no Python, no .NET, no VC++ redistributable: copy it to
 any Windows PC and it runs.
 
 [Español](README.es.md) · [Changelog](CHANGELOG.md) · [What's left](SUGGESTIONS.md)
@@ -23,7 +23,7 @@ window manager gymnastics: it is always on top, it can be pinned per window, and
 every copy when you need the desktop back.
 
 The other half of the idea is weight. Embedding an engine would mean tens of megabytes; WebView2 is
-already part of Windows, so the program itself is a single 682 KB executable written in C++.
+already part of Windows, so the program itself is a single 687 KB executable written in C++.
 
 ## Run it
 
@@ -32,6 +32,8 @@ already part of Windows, so the program itself is a single 682 KB executable wri
 - It also takes an address: `tinybrowser.exe es.wikipedia.org` (handy for shortcuts, and for
   `--container "Work"`, see below).
 - Type and press Enter. No dots means a Google search. The cursor is already in the field.
+- The `.exe` is **not code-signed**, so the first run shows SmartScreen's "Windows protected your
+  PC": *More info → Run anyway*. The source is here and `build.bat` builds the same binary.
 - Every page is scaled so its whole width fits: at 90 px of height, without that you would see one
   corner of the page. `Ctrl` + wheel zooms by hand. The bar and the start page never scale.
 
@@ -79,6 +81,16 @@ again brings it back. `Escape` or the right button leaves the eyedropper with th
 The filter is one SVG pass over the page, computed per pixel, so it reaches animated GIFs, video and
 canvas too. The **Rango del color** slider (0–40, default 5) is the tolerance: screens return a colour
 that can differ by a level or two from what the page painted.
+
+## Rounded corners
+
+The **Esquinas** slider at the top of the options panel rounds the four corners of **that** window:
+0 leaves the rectangle it has always been, and 100 takes the largest radius four equal corners allow —
+half the shorter side — so a 160×90 window becomes a capsule and a 60×60 one a circle. The window
+changes shape while the slider moves, with no reload. It is a property of the window, like the pin:
+each one keeps its own, `.to` snapshots remember it and `Ctrl+Alt+D` copies it (`--radius N` from a
+shortcut). The start bar caps its own radius at 10 px so its address field and buttons stay inside
+the shape.
 
 ## Snapshots: `.to` files
 
