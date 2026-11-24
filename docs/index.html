@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tinybrowser — a 160×90 always-on-top browser for Windows</title>
+<meta name="description" content="A 160×90 always-on-top browser for Windows in one 688 KB .exe. No installer, no Electron. Per-window containers, .to snapshots, colour transparency and Ctrl+click windows.">
+<link rel="canonical" href="https://alainrichell.github.io/tinybrowser/">
+<link rel="icon" href="icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="tinybrowser — a 160×90 always-on-top browser">
+<meta property="og:description" content="One 688 KB .exe. A real browser window that sits in the corner, over everything. Windows 10/11, C++ and WebView2.">
+<meta property="og:url" content="https://alainrichell.github.io/tinybrowser/">
+<meta property="og:image" content="https://alainrichell.github.io/tinybrowser/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="tinybrowser — a 160×90 always-on-top browser">
+<meta name="twitter:description" content="One 688 KB .exe. A real browser window that sits in the corner, over everything.">
+<meta name="twitter:image" content="https://alainrichell.github.io/tinybrowser/social-preview.png">
+<style>
+:root{
+  --bg:#080b0f;--panel:#0d1218;--panel2:#111923;--line:#1e2a36;--line2:#2b3a4a;
+  --text:#e9f0f7;--muted:#97a8b9;--dim:#647586;--accent:#4a90c2;--accent2:#7fb3d5;
+  --violet:#8b5cf6;--mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:var(--accent2);text-decoration:none}
+a:hover{text-decoration:underline}
+img,video{max-width:100%;display:block}
+.wrap{width:min(1080px,calc(100% - 40px));margin:0 auto}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.dim{color:var(--dim)}
+
+/* header */
+header{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+  background:rgba(8,11,15,.78);border-bottom:1px solid rgba(30,42,54,.7)}
+.nav{display:flex;align-items:center;gap:22px;height:64px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--text);font-weight:700;letter-spacing:-.02em}
+.brand img{width:28px;height:28px;border-radius:8px}
+.brand span{font-size:17px}
+.nav .links{display:flex;gap:20px;margin-left:auto;font-size:14px}
+.nav .links a{color:var(--muted)}
+.nav .links a:hover{color:var(--text)}
+.nav .dl{padding:8px 14px;border-radius:8px;background:var(--accent);color:#04121d;
+  font-size:14px;font-weight:700;border:1px solid transparent}
+.nav .dl:hover{background:var(--accent2);text-decoration:none}
+
+/* hero */
+.hero{position:relative;padding:76px 0 64px;overflow:hidden}
+.hero:before{content:"";position:absolute;inset:-30% 20% auto -10%;height:640px;
+  background:radial-gradient(closest-side,rgba(74,144,194,.22),transparent 70%);pointer-events:none}
+.hero:after{content:"";position:absolute;inset:10% -20% auto 50%;height:560px;
+  background:radial-gradient(closest-side,rgba(139,92,246,.12),transparent 70%);pointer-events:none}
+.hero .wrap{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center}
+.tag{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--line2);
+  border-radius:999px;color:var(--muted);font:12px/1 var(--mono);letter-spacing:.02em}
+.tag i{width:6px;height:6px;border-radius:50%;background:#3fbf7f;box-shadow:0 0 10px #3fbf7f}
+h1{font-size:clamp(38px,5vw,62px);line-height:1.02;letter-spacing:-.045em;margin:22px 0 18px;font-weight:750}
+h1 em{font-style:normal;color:var(--accent2)}
+.lede{font-size:18px;line-height:1.65;color:var(--muted);max-width:34em;margin:0 0 26px}
+.lede strong{color:var(--text);font-weight:600}
+.ctas{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border-radius:10px;
+  font-weight:700;font-size:15px;border:1px solid var(--line2);color:var(--text);background:var(--panel2)}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#04121d;box-shadow:0 10px 30px rgba(74,144,194,.22)}
+.btn.primary:hover{background:var(--accent2);border-color:var(--accent2)}
+.btn svg{width:17px;height:17px}
+.spec{margin-top:20px;font:12px/1.7 var(--mono);color:var(--dim);letter-spacing:.01em}
+.spec b{color:var(--muted);font-weight:500}
+
+/* the little window */
+.stage{position:relative;min-height:330px;display:grid;place-items:center}
+.ghost{position:absolute;width:80%;aspect-ratio:16/9;border:1px solid var(--line2);
+  border-radius:20px;background:linear-gradient(145deg,#0c1117,#0a0e13);opacity:.5;
+  transform:rotate(-6deg) translate(-16px,22px)}
+.ghost:after{content:"Work";position:absolute;right:12px;bottom:9px;font:10px var(--mono);color:var(--dim)}
+.tiny{position:relative;width:86%;aspect-ratio:16/9;border-radius:18px;overflow:hidden;
+  border:1px solid #33475a;background:#0a0f15;box-shadow:0 30px 80px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.03) inset;
+  transform:rotate(1.2deg);transition:transform .45s ease}
+.stage:hover .tiny{transform:rotate(0) translateY(-3px)}
+.strip{height:23px;display:flex;align-items:center;gap:6px;padding:0 8px;
+  background:linear-gradient(#121b25,#0f1720);border-bottom:1px solid #1d2a37;
+  font:9px/1 var(--mono);color:#8fa4b8}
+.strip .dot{width:5px;height:5px;border-radius:50%;background:var(--violet);box-shadow:0 0 8px var(--violet)}
+.strip .addr{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.9}
+.strip .k{width:9px;height:9px;border:1px solid #385068;border-radius:2px}
+.page{position:absolute;inset:23px 0 0;padding:13px 14px 0;background:
+  radial-gradient(120% 90% at 80% 0%,#101d2a 0%,#0a1017 60%)}
+.page h4{margin:0;font:600 10px/1.2 var(--sans);color:#c7d6e5;letter-spacing:.01em}
+.page .live{float:right;font:8px var(--mono);color:#3fbf7f}
+.chart{display:flex;align-items:flex-end;gap:4px;height:58px;margin-top:12px;
+  border-bottom:1px solid #1b2936;padding-bottom:2px}
+.chart i{flex:1;background:linear-gradient(#4a90c2,#2c5f86);border-radius:2px 2px 0 0;opacity:.85;
+  height:var(--h,40%)}
+.chart i:nth-child(3n){background:linear-gradient(#7fb3d5,#4a90c2)}
+.rows{margin-top:10px;display:grid;gap:5px}
+.rows span{display:block;height:4px;border-radius:2px;background:#16222e}
+.rows span:nth-child(2){width:72%}
+.rows span:nth-child(3){width:55%}
+.measure{position:absolute;left:50%;bottom:-30px;transform:translateX(-50%);
+  font:10px var(--mono);color:var(--dim);white-space:nowrap}
+.measure:before,.measure:after{content:"";position:absolute;top:50%;width:26px;height:1px;background:var(--line2)}
+.measure:before{right:100%;margin-right:8px}.measure:after{left:100%;margin-left:8px}
+
+/* sections */
+section{padding:74px 0;border-top:1px solid rgba(30,42,54,.55)}
+.kicker{font:11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+h2{font-size:clamp(28px,3.5vw,40px);line-height:1.12;letter-spacing:-.035em;margin:12px 0 14px;font-weight:720}
+.sub{color:var(--muted);max-width:40em;margin:0 0 34px;font-size:17px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:42px;align-items:start}
+.two p{margin:0 0 14px;color:var(--muted)}
+.two p strong{color:var(--text)}
+.pull{border-left:2px solid var(--accent);padding:2px 0 2px 18px;color:var(--text);font-size:19px;line-height:1.55}
+
+/* feature cards */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+  border-radius:14px;padding:20px;min-height:150px}
+.card svg{width:20px;height:20px;color:var(--accent2);margin-bottom:12px}
+.card h3{margin:0 0 6px;font-size:15px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:13.5px;line-height:1.55}
+.card .tagline{display:inline-block;margin-top:10px;font:10px var(--mono);color:var(--dim)}
+
+/* video */
+.demo{display:grid;grid-template-columns:1.25fr .75fr;gap:34px;align-items:center}
+.video{border:1px solid var(--line2);border-radius:14px;overflow:hidden;background:#05080b;
+  box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.video video{width:100%;display:block}
+.demo ul{margin:0;padding:0;list-style:none;display:grid;gap:14px}
+.demo li{display:flex;gap:10px;color:var(--muted);font-size:14px;line-height:1.5}
+.demo li b{color:var(--text);font-weight:600}
+.demo li:before{content:"";flex:0 0 6px;height:6px;margin-top:7px;border-radius:50%;background:var(--accent)}
+
+/* table */
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+th,td{padding:13px 16px;text-align:left;border-bottom:1px solid var(--line)}
+th{font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);background:#0b1016}
+td:first-child{color:var(--text);font-weight:600}
+th:first-child{width:31%}
+tr:last-child td{border-bottom:0}
+td{color:var(--muted)}
+.yes{color:#7fd6a8}.no{color:#e08a8a}
+.note{margin-top:12px;font:11px/1.6 var(--mono);color:var(--dim)}
+
+/* uses */
+.uses{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.use{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--panel)}
+.use h4{margin:0 0 4px;font-size:13.5px}
+.use p{margin:0;color:var(--muted);font-size:12.5px;line-height:1.5}
+
+/* keys */
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;border-top:1px solid var(--line)}
+.keys div{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.keys kbd{font:11px var(--mono);color:var(--accent2);background:#0b1118;border:1px solid var(--line2);
+  border-radius:4px;padding:2px 6px;white-space:nowrap}
+.keys span{color:var(--muted);text-align:right}
+
+/* install */
+.install{display:grid;grid-template-columns:.9fr 1.1fr;gap:40px;align-items:start}
+.steps{counter-reset:s;display:grid;gap:16px;margin:0;padding:0;list-style:none}
+.steps li{position:relative;padding-left:36px;color:var(--muted);font-size:14.5px}
+.steps li:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:0;width:24px;height:24px;
+  display:grid;place-items:center;border:1px solid var(--line2);border-radius:50%;
+  font:11px var(--mono);color:var(--accent2);background:#0b1118}
+.steps b{color:var(--text)}
+.note-box{border:1px solid #3a3020;background:#171208;border-radius:12px;padding:16px 18px;
+  color:#d9c9a3;font-size:13.5px;line-height:1.6}
+.note-box b{color:#f0dfb6}
+
+/* spanish */
+.es{border:1px solid var(--line);border-radius:14px;padding:26px 28px;background:var(--panel)}
+.es h3{margin:0 0 8px;font-size:17px}
+.es p{margin:0;color:var(--muted);font-size:14.5px}
+
+/* faq */
+.faq{display:grid;gap:8px;max-width:760px}
+details{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:0 16px}
+summary{cursor:pointer;padding:13px 0;font-size:14.5px;color:var(--text);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:after{content:"+";float:right;color:var(--dim);font-family:var(--mono)}
+details[open] summary:after{content:"−"}
+details p{margin:0 0 14px;color:var(--muted);font-size:14px}
+
+/* final */
+.final{text-align:center;padding:86px 0}
+.final h2{margin-bottom:10px}
+.final p{color:var(--muted);margin:0 auto 26px;max-width:36em}
+.final .ctas{justify-content:center}
+
+footer{border-top:1px solid var(--line);padding:30px 0 40px;color:var(--dim);font-size:12.5px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
+footer a{color:var(--muted)}
+footer .fl{display:flex;gap:16px;flex-wrap:wrap}
+
+@media (max-width:900px){
+  .hero .wrap{grid-template-columns:1fr;gap:36px}
+  .stage{min-height:300px;order:-1}
+  .tiny{width:78%}
+  .two,.demo,.install{grid-template-columns:1fr}
+  .grid{grid-template-columns:1fr 1fr}
+  .uses{grid-template-columns:1fr 1fr}
+  .nav .links{display:none}
+  .keys{grid-template-columns:1fr}
+}
+@media (max-width:560px){
+  .wrap{width:calc(100% - 28px)}
+  .hero{padding:46px 0 44px}
+  h1{font-size:40px}
+  .grid,.uses{grid-template-columns:1fr}
+  .tiny{width:92%}
+  .stage{min-height:260px}
+  section{padding:54px 0}
+  .final{padding:64px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .tiny{transition:none}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top"><img src="icon.png" alt=""><span>tinybrowser</span></a>
+    <nav class="links">
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="#compare">Compare</a>
+      <a href="#keys">Keys</a>
+      <a href="https://github.com/AlainRichell/tinybrowser" rel="noopener">GitHub</a>
+    </nav>
+    <a class="dl" href="https://github.com/AlainRichell/tinybrowser/releases/latest/download/tinybrowser.exe">Download</a>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero" style="border-top:0">
+  <div class="wrap">
+    <div>
+      <span class="tag"><i></i> Windows 10/11 · MIT · 688 KB</span>
+      <h1>A browser the size of a <em>sticky note.</em></h1>
+      <p class="lede">A real 160×90 window that stays on top of everything else. Keep a dashboard, a
+        doc, a chat or a video in the corner — <strong>without a tab strip, an installer or an Electron
+        runtime</strong>.</p>
+      <div class="ctas">
+        <a class="btn primary" href="https://github.com/AlainRichell/tinybrowser/releases/latest/download/tinybrowser.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn" href="https://github.com/AlainRichell/tinybrowser" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2.16c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.39-5.25 5.68.41.35.78 1.05.78 2.12v3.14c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+          View source
+        </a>
+      </div>
+      <div class="spec"><b>688,640 bytes</b> · one .exe · C++ / WebView2 · no installer · no .NET · no VC++ redist</div>
+    </div>
+
+    <div class="stage" aria-label="A 160 by 90 tinybrowser window, scaled up">
+      <div class="ghost" aria-hidden="true"></div>
+      <div class="tiny" aria-hidden="true">
+        <div class="strip">
+          <span class="dot"></span>
+          <span class="addr">grafana.local/d/api-latency</span>
+          <span class="k"></span><span class="k"></span><span class="k"></span>
+        </div>
+        <div class="page">
+          <h4>API latency <span class="live">● live</span></h4>
+          <div class="chart">
+            <i style="--h:34%"></i><i style="--h:52%"></i><i style="--h:46%"></i><i style="--h:68%"></i>
+            <i style="--h:58%"></i><i style="--h:76%"></i><i style="--h:64%"></i><i style="--h:88%"></i>
+            <i style="--h:72%"></i><i style="--h:94%"></i><i style="--h:80%"></i><i style="--h:66%"></i>
+          </div>
+          <div class="rows"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+      <div class="measure">160 × 90 px · shown at 2×</div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap two">
+    <div>
+      <div class="kicker">Why</div>
+      <h2>A whole browser is too much for one page.</h2>
+      <p>You do not need a tab strip, a sidebar, a sync account and 600 MB of profile to keep an eye
+        on a build, a dashboard or a chat. You need a window small enough to live in the corner and
+        large enough to read.</p>
+      <p><strong>tiny is that window.</strong> Type an address and it navigates there, with the same
+        engine Edge uses. Every page is scaled so its whole width fits; you can resize it down to
+        60×60, pin it above everything, and hide every copy when you need the desktop back.</p>
+    </div>
+    <div>
+      <p class="pull">“Embedding an engine would mean tens of megabytes. WebView2 is already part of
+        Windows, so the program itself is one 688 KB executable written in C++.”</p>
+      <p style="margin-top:18px">That is the whole trick: the browser engine is already on your
+        machine. tiny only adds the window, the gestures, the containers and the snapshots — and
+        stays out of the way.</p>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="kicker">Features</div>
+    <h2>Small window. Not a small browser.</h2>
+    <p class="sub">Everything below is per window, not per app. Open as many as you need; they do not
+      share a tab strip.</p>
+    <div class="grid">
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>
+        <h3>160×90, always on top</h3>
+        <p>A real frameless window, not a panel. Pin it above every app, or let it behave like a
+          normal window. Duplicate it with 4 px of air; never cover another copy.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v16"/><path d="M6 9h12"/><path d="M6 15h12"/></svg>
+        <h3>688 KB, one .exe</h3>
+        <p>Copy it anywhere and run it. No installer, no .NET, no VC++ redistributable, no Electron.
+          The WebView2 runtime is already part of Windows.</p>
+        <span class="tagline">one .exe · no installer · no .NET</span>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16v10H4z"/><path d="M8 4v3M16 4v3"/></svg>
+        <h3>Containers</h3>
+        <p>A container is a separate profile for one window: cookies, sessions, storage, cache and
+          history kept apart. Two Google accounts at once, or work and personal apart.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6M10 17h4"/></svg>
+        <h3>Snapshots: .to files</h3>
+        <p>Freeze a window — address, position, size, zoom, container, corners, keyed colours — into a
+          text file. Double-click it in Explorer and the window comes back exactly as it was.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m4 20 8-8"/><path d="M14 4l6 6"/><path d="M4 20l4-1 9-9-3-3-9 9z"/></svg>
+        <h3>Colour transparency</h3>
+        <p>Ctrl+Alt+A arms an eyedropper. Everything painted in that colour disappears from that
+          window and the desktop shows through — videos and animated GIFs included.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg>
+        <h3>Rounded corners</h3>
+        <p>A slider from 0 to 100 per window. At 0 it is the rectangle it always was; at 100 the
+          corners meet and a 160×90 window becomes a capsule. Saved in the .to and copied on duplicate.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h10v14H4z"/><path d="M14 9h6v10h-6"/><path d="M7 9h4M7 13h4"/></svg>
+        <h3>Ctrl+click a link</h3>
+        <p>Opens it in another tiny window at the same size, in the next free spot, same container
+          and corners. Plain clicks and target=_blank stay in the current window.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/><circle cx="12" cy="12" r="2.5"/></svg>
+        <h3>Gestures, not menus</h3>
+        <p>Ctrl+Alt+S for the one-line strip, Ctrl+Alt+D to duplicate, Ctrl+Alt+C to hide every copy,
+          Ctrl+Alt+T for a new window even with tiny closed, Alt+drag to move it.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M4 9h16"/><path d="M9 9v11"/></svg>
+        <h3>No telemetry</h3>
+        <p>No account, no cloud, no background service. The profile is a folder under
+          %LOCALAPPDATA%\tinybrowser; the app is one exe and a .ini next to it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap demo">
+    <div class="video">
+      <video controls muted loop playsinline preload="metadata" poster="bar.png">
+        <source src="demo.mp4" type="video/mp4">
+      </video>
+    </div>
+    <div>
+      <div class="kicker">46 seconds</div>
+      <h2>Watch it disappear.</h2>
+      <p class="sub" style="margin-bottom:22px">The demo takes the dark blue out of a page and leaves
+        the cat on the desktop, saves the window as a .to, and multiplies it across the screen.</p>
+      <ul>
+        <li><b>Transparency that reaches video and canvas</b> — not a CSS background hack.</li>
+        <li><b>Snapshots you can double-click</b> — a window becomes a text file.</li>
+        <li><b>Copies that find their own spot</b> — no overlap, no window manager gymnastics.</li>
+      </ul>
+      <p style="margin-top:18px;font:11px/1.6 var(--mono)" class="dim">Recorded at 60 fps; the full
+        sequence is <a href="demo.mp4">demo.mp4</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <div class="kicker">Compare</div>
+    <h2>What you give up by using a normal window.</h2>
+    <p class="sub">A normal browser can do everything tiny does, if what you need is a whole browser.
+      This is the other shape of the problem.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th>tinybrowser</th><th>A browser window</th><th>An Electron mini-browser</th></tr></thead>
+        <tbody>
+          <tr><td>Download</td><td class="yes">688 KB</td><td class="no">100+ MB</td><td class="no">80–150 MB</td></tr>
+          <tr><td>Installer / admin</td><td class="yes">None</td><td class="no">Usually</td><td class="no">Usually</td></tr>
+          <tr><td>Always on top</td><td class="yes">Per window</td><td class="no">No</td><td>Some</td></tr>
+          <tr><td>160×90 with the page fitted</td><td class="yes">Yes</td><td class="no">Manual</td><td class="no">Manual</td></tr>
+          <tr><td>Separate cookies per window</td><td class="yes">Containers</td><td class="no">Profiles</td><td class="no">Rarely</td></tr>
+          <tr><td>Save a window to a file</td><td class="yes">.to</td><td class="no">No</td><td class="no">No</td></tr>
+          <tr><td>Colour-key transparency</td><td class="yes">Eyedropper</td><td class="no">No</td><td class="no">No</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Electron mini-browsers are a broad group; the size column is the order of
+      magnitude, not a specific product. tiny is Windows-only on purpose: it uses the engine Windows
+      already ships.</p>
+  </div>
+</section>
+
+<section id="uses">
+  <div class="wrap">
+    <div class="kicker">Use it for</div>
+    <h2>One page, always in the corner.</h2>
+    <div class="uses" style="margin-top:26px">
+      <div class="use"><h4>Dashboards</h4><p>Grafana, Uptime Kuma, a trading chart or a build status that never leaves your peripheral vision.</p></div>
+      <div class="use"><h4>Docs &amp; API reference</h4><p>A page you read while you code, without stealing half the screen from the editor.</p></div>
+      <div class="use"><h4>Chat</h4><p>A group chat or a support queue in the corner, on top of the app you are working in.</p></div>
+      <div class="use"><h4>Video &amp; guides</h4><p>A tutorial, a stream or a map over a game — or a recipe over the kitchen counter.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <div class="kicker">Keys</div>
+    <h2>Eight chords, no menus.</h2>
+    <p class="sub">The chords are global: they work wherever you are, and they act on the tiny
+      window you are using.</p>
+    <div class="keys">
+      <div><kbd>Ctrl+Alt+S</kbd><span>The one-line strip over the page, or back to the start bar</span></div>
+      <div><kbd>Ctrl+Alt+Z</kbd><span>Back</span></div>
+      <div><kbd>Ctrl+Alt+D</kbd><span>Duplicate this window (same size, 4 px of air)</span></div>
+      <div><kbd>Ctrl+Alt+A</kbd><span>Colour eyedropper</span></div>
+      <div><kbd>Ctrl+Alt+C</kbd><span>Hide every window, or bring them all back</span></div>
+      <div><kbd>Ctrl+Alt+W</kbd><span>Hide this one; the next press brings it back</span></div>
+      <div><kbd>Ctrl+Alt+G</kbd><span>Save this window to a .to, or load one</span></div>
+      <div><kbd>Ctrl+Alt+T</kbd><span>A new window, even with tiny closed</span></div>
+      <div><kbd>Ctrl+Alt+X</kbd><span>Close</span></div>
+      <div><kbd>Alt + drag</kbd><span>Move the window from anywhere, page included</span></div>
+      <div><kbd>Ctrl+click</kbd><span>Open a link in another tiny window</span></div>
+      <div><kbd>Ctrl + wheel</kbd><span>Zoom the page by hand</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap install">
+    <div>
+      <div class="kicker">Install</div>
+      <h2>Ten seconds, no wizard.</h2>
+      <ol class="steps">
+        <li><b>Download</b> <a href="https://github.com/AlainRichell/tinybrowser/releases/latest/download/tinybrowser.exe">tinybrowser.exe</a> — 688 KB.</li>
+        <li><b>Double-click it.</b> The window opens at the bottom-right corner, always on top.</li>
+        <li><b>Type an address</b> (or a search) and press Enter. No dots means a web search.</li>
+        <li><b>Pin it, resize it, or keep it.</b> The exe is the app; delete it and it is gone.</li>
+      </ol>
+      <p style="margin-top:22px;font:11px/1.7 var(--mono)" class="dim">Needs Windows 10/11 x64 and the
+        WebView2 runtime, which ships with Edge and Windows 11. The source and build.bat are in the
+        <a href="https://github.com/AlainRichell/tinybrowser">repo</a>.</p>
+    </div>
+    <div>
+      <div class="note-box">
+        <b>The .exe is not code-signed.</b> The first run shows SmartScreen’s “Windows protected your
+        PC”. Choose <b>More info → Run anyway</b>. The whole source is public and the build is one
+        batch file; if you prefer, compile it yourself.
+      </div>
+      <div style="margin-top:18px;border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:var(--panel)">
+        <div class="mono" style="font-size:11px;color:var(--dim);margin-bottom:6px">PORTABLE BY DESIGN</div>
+        <p style="margin:0;color:var(--muted);font-size:13.5px">No installer, no registry service, no
+          admin. The profile lives in <span class="mono">%LOCALAPPDATA%\tinybrowser</span>; your
+          options live in <span class="mono">tinybrowser.ini</span> next to the exe.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="es" lang="es">
+  <div class="wrap">
+    <div class="es">
+      <h3>En español</h3>
+      <p>tinybrowser es un navegador de <b>160×90</b> que queda siempre encima, en una sola ventana sin
+        pestañas. Un <b>.exe de 688 KB</b>, sin instalador: se copia a cualquier PC con Windows 10/11 y
+        anda. Cada ventana puede tener su <b>contenedor</b> (cookies y sesiones aparte), se puede guardar
+        como un archivo <b>.to</b>, volver transparente un color con el gotero, redondear sus esquinas o
+        abrir un enlace con <b>Ctrl+clic</b> en otra ventana. Lee el
+        <a href="https://github.com/AlainRichell/tinybrowser/blob/main/README.es.md">README en español</a>
+        o descarga el exe y probalo.</p>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="kicker">FAQ</div>
+    <h2>Before you ask.</h2>
+    <div class="faq" style="margin-top:26px">
+      <details><summary>Does it replace my browser?</summary><p>No. It is the window you keep open next
+        to your browser: one page, in the corner. A full browser with tabs is still the right tool for
+        browsing.</p></details>
+      <details><summary>Is it really one .exe?</summary><p>Yes. The program is 688,640 bytes. It uses the
+        WebView2 runtime that ships with Windows, so the engine is not inside the exe; that is why it
+        can be this small.</p></details>
+      <details><summary>Why does Windows warn me?</summary><p>The exe is not code-signed, so SmartScreen
+        shows its generic warning for a new unsigned binary. Choose More info → Run anyway, or build it
+        yourself from the source.</p></details>
+      <details><summary>Windows only?</summary><p>Yes. It is built on Win32 and WebView2. There is no
+        macOS or Linux build; the same idea exists elsewhere on those platforms, but this one is not a
+        cross-platform app.</p></details>
+      <details><summary>Where is my data?</summary><p>In <span class="mono">%LOCALAPPDATA%\tinybrowser</span>.
+        Containers are folders inside it. There is no account, cloud or telemetry. Deleting the exe and
+        that folder removes everything.</p></details>
+      <details><summary>Can I use two accounts at once?</summary><p>Yes: give each window a different
+        container. Cookies, sessions, storage and history stay apart, so two Google accounts can be open
+        at the same time.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <div class="kicker">Try it</div>
+    <h2>Give it a corner of your desktop.</h2>
+    <p>One 688 KB exe. If it earns a spot on your screen, a star on GitHub helps other people find it.</p>
+    <div class="ctas">
+      <a class="btn primary" href="https://github.com/AlainRichell/tinybrowser/releases/latest/download/tinybrowser.exe">Download for Windows</a>
+      <a class="btn" href="https://github.com/AlainRichell/tinybrowser" rel="noopener">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 tinybrowser · MIT · built with C++ and WebView2</div>
+    <div class="fl">
+      <a href="https://github.com/AlainRichell/tinybrowser">GitHub</a>
+      <a href="https://github.com/AlainRichell/tinybrowser/releases">Releases</a>
+      <a href="https://github.com/AlainRichell/tinybrowser/issues">Issues</a>
+      <a href="https://github.com/AlainRichell/tinybrowser/blob/main/README.es.md">Español</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

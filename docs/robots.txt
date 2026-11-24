@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://alainrichell.github.io/tinybrowser/sitemap.xml

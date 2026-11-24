@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<title>tinybrowser Open Graph card</title>
+<style>
+  :root{--bg:#080b0f;--panel:#0e141b;--line:#2b3a4a;--text:#e9f0f7;--muted:#97a8b9;
+    --dim:#5d6e7f;--accent:#4a90c2;--accent2:#7fb3d5;--violet:#8b5cf6;
+    --sans:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;--mono:"Cascadia Mono",Consolas,monospace}
+  *{box-sizing:border-box}
+  html,body{margin:0;width:1280px;height:640px;overflow:hidden;background:var(--bg);color:var(--text);
+    font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .card{position:relative;width:1280px;height:640px;padding:64px 72px;overflow:hidden;
+    background:radial-gradient(110% 90% at 12% 105%,#0d1923 0%,#080b0f 60%)}
+  .card:before{content:"";position:absolute;left:-15%;top:-55%;width:850px;height:850px;
+    background:radial-gradient(closest-side,rgba(74,144,194,.22),transparent 70%)}
+  .card:after{content:"";position:absolute;right:-15%;bottom:-60%;width:700px;height:700px;
+    background:radial-gradient(closest-side,rgba(139,92,246,.16),transparent 70%)}
+  .grid{position:relative;display:grid;grid-template-columns:1fr 500px;gap:30px;height:512px;align-items:center}
+  .brand{display:flex;align-items:center;gap:16px;margin-bottom:26px}
+  .brand img{width:88px;height:88px;border-radius:20px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .brand b{font-size:58px;letter-spacing:-.05em;font-weight:750}
+  .tag{font:22px/1.25 var(--sans);color:var(--muted);max-width:620px;margin:0 0 26px;letter-spacing:-.015em}
+  .spec{font:15px/1.7 var(--mono);color:var(--accent2);letter-spacing:.01em}
+  .spec i{font-style:normal;color:var(--dim)}
+  .foot{position:absolute;left:72px;bottom:38px;font:13px/1.6 var(--mono);color:var(--dim)}
+  .foot b{color:var(--muted);font-weight:500}
+  .stage{position:relative;height:360px;display:grid;place-items:center}
+  .ghost{position:absolute;width:430px;height:242px;border:1px solid var(--line);border-radius:26px;
+    background:linear-gradient(145deg,#0c1117,#0a0e13);opacity:.55;transform:rotate(-6deg) translate(-18px,22px)}
+  .ghost:after{content:"Work";position:absolute;right:18px;bottom:13px;font:11px var(--mono);color:var(--dim)}
+  .tiny{position:relative;width:470px;height:264px;border-radius:24px;overflow:hidden;border:1px solid #33475a;
+    background:#0a0f15;box-shadow:0 40px 100px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.03) inset;transform:rotate(1deg)}
+  .strip{height:31px;display:flex;align-items:center;gap:8px;padding:0 12px;background:linear-gradient(#121b25,#0f1720);
+    border-bottom:1px solid #1d2a37;font:11px/1 var(--mono);color:#8fa4b8}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--violet);box-shadow:0 0 10px var(--violet)}
+  .addr{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .k{width:12px;height:12px;border:1px solid #385068;border-radius:3px}
+  .page{position:absolute;inset:31px 0 0;padding:17px 18px 0;background:radial-gradient(120% 90% at 80% 0%,#101d2a 0%,#0a1017 60%)}
+  .page h4{margin:0;font:600 13px/1.2 var(--sans);color:#c7d6e5}
+  .page .live{float:right;font:10px var(--mono);color:#3fbf7f}
+  .chart{display:flex;align-items:flex-end;gap:5px;height:78px;margin-top:16px;border-bottom:1px solid #1b2936;padding-bottom:3px}
+  .chart i{flex:1;background:linear-gradient(#4a90c2,#2c5f86);border-radius:2px 2px 0 0;opacity:.85;height:var(--h,40%)}
+  .chart i:nth-child(3n){background:linear-gradient(#7fb3d5,#4a90c2)}
+  .rows{margin-top:13px;display:grid;gap:7px}
+  .rows span{display:block;height:6px;border-radius:3px;background:#16222e}
+  .rows span:nth-child(2){width:72%}.rows span:nth-child(3){width:55%}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="grid">
+    <div>
+      <div class="brand"><img src="icon.png" alt=""><b>tinybrowser</b></div>
+      <p class="tag">A 160×90 always-on-top browser for Windows.</p>
+      <div class="spec">688 KB · one .exe · C++ / WebView2<br><i>no installer · no .NET · no VC++ redist</i></div>
+    </div>
+    <div class="stage">
+      <div class="ghost"></div>
+      <div class="tiny">
+        <div class="strip"><span class="dot"></span><span class="addr">grafana.local/d/api-latency</span><span class="k"></span><span class="k"></span><span class="k"></span></div>
+        <div class="page">
+          <h4>API latency <span class="live">● live</span></h4>
+          <div class="chart"><i style="--h:34%"></i><i style="--h:52%"></i><i style="--h:46%"></i><i style="--h:68%"></i><i style="--h:58%"></i><i style="--h:76%"></i><i style="--h:64%"></i><i style="--h:88%"></i><i style="--h:72%"></i><i style="--h:94%"></i><i style="--h:80%"></i><i style="--h:66%"></i></div>
+          <div class="rows"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><b>github.com/AlainRichell/tinybrowser</b> · MIT · Windows 10/11</div>
+</div>
+</body>
+</html>

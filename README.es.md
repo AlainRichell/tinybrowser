@@ -11,6 +11,9 @@ escribís una dirección (o buscás) y navega ahí mismo, con el motor de Edge e
 **688.640 bytes.** Un solo `.exe`, sin Python, sin .NET y sin la redistribuible de Visual C++:
 se copia a cualquier PC con Windows y anda.
 
+**[Descargar](https://github.com/AlainRichell/tinybrowser/releases/latest)** ·
+**[Sitio](https://alainrichell.github.io/tinybrowser/)** · [English](README.md)
+
 ![tinybrowser: la ventana se va al centro, el gotero le saca el azul oscuro a la página y deja el gato sobre el escritorio, la ventana se guarda como snapshot y se reabre desde el escritorio, y el gato se multiplica por la pantalla](docs/demo.gif)
 
 *La secuencia completa, 46 s: [docs/demo.mp4](docs/demo.mp4).*
@@ -325,3 +328,6 @@ perfil. El zoom se reajusta por página, así que una página muy ancha queda co
 ## Licencia
 
 MIT — ver [`LICENSE`](LICENSE).
+
+Si tiny se gana un lugar en tu escritorio, una **estrella en GitHub** ayuda a que otros lo encuentren:
+[github.com/AlainRichell/tinybrowser](https://github.com/AlainRichell/tinybrowser).

@@ -1,5 +1,10 @@
 # tinybrowser
 
+[![release](https://img.shields.io/github/v/release/AlainRichell/tinybrowser?color=4a90c2&label=release)](https://github.com/AlainRichell/tinybrowser/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/AlainRichell/tinybrowser/total?color=4a90c2)](https://github.com/AlainRichell/tinybrowser/releases)
+[![licence](https://img.shields.io/github/license/AlainRichell/tinybrowser?color=4a90c2)](LICENSE)
+[![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-4a90c2)](#requirements)
+
 <img src="docs/bar.png" width="330" align="right" alt="tinybrowser's start bar: the address field, six buttons and the container name">
 
 **A 160×90 always-on-top browser window for Windows.** Not a tab, not a side panel: a real, frameless
@@ -9,6 +14,8 @@ search) and it navigates right there, with the same engine Edge uses.
 **688,640 bytes.** One `.exe`. No installer, no Python, no .NET, no VC++ redistributable: copy it to
 any Windows PC and it runs.
 
+**[Download](https://github.com/AlainRichell/tinybrowser/releases/latest)** ·
+**[Website](https://alainrichell.github.io/tinybrowser/)** ·
 [Español](README.es.md) · [Changelog](CHANGELOG.md) · [What's left](SUGGESTIONS.md)
 
 ![tinybrowser: the window slides to the middle, the eyedropper takes the page's dark blue away and leaves the cat on the desktop, the window is saved as a snapshot and reopened from the desktop, and the cat multiplies across the screen](docs/demo.gif)
@@ -24,6 +31,14 @@ every copy when you need the desktop back.
 
 The other half of the idea is weight. Embedding an engine would mean tens of megabytes; WebView2 is
 already part of Windows, so the program itself is a single 688 KB executable written in C++.
+
+## How it compares
+
+A normal browser can be pinned with PowerToys and shrunk by hand, but it still carries a whole browser
+shell and one shared profile. An Electron mini-browser carries 80–150 MB of runtime to draw the same
+small window. tiny is one 688 KB `.exe` on the engine Windows already ships, with per-window
+containers and `.to` snapshots. The [website](https://alainrichell.github.io/tinybrowser/#compare) has
+the full table; the short version is size, install and per-window identity.
 
 ## Run it
 
@@ -156,3 +171,6 @@ Everything else, down to the measured details of the fit and the icon pipeline, 
 ## Licence
 
 MIT — see [`LICENSE`](LICENSE).
+
+If tiny earns a spot on your desktop, a **star on GitHub** helps other people find it:
+[github.com/AlainRichell/tinybrowser](https://github.com/AlainRichell/tinybrowser).
