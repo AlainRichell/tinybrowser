@@ -9,7 +9,7 @@
 #include <windows.h>  // VS_FFI_FILEFLAGSMASK and the VOS_/VFT_ constants
 #include "tinyversion.h"
 
-1 ICON "tinybrowser.ico"
+1 ICON "TinyBrowserIcon2.ico"
 2 ICON "tiny-file.ico"
 
 1 VERSIONINFO
