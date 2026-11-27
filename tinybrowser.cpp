@@ -39,11 +39,11 @@ namespace {
 constexpr int  kWidth = 160;      // page size: what a loaded page needs to be readable
 constexpr int  kHeight = 90;
 // The bar has its own size: at 141 px wide the magnifier button lands exactly on top of the close
-// button (measured: 0.0 px apart), and at 77 px tall the brand line gets the same room above and
-// below it. Navigating switches the window back to the page size and showing the bar switches it
-// back here, so the layout the user asked for is the one the start page always has.
+// button (measured: 0.0 px apart), and 66 px tall is the two rows of controls plus the room the
+// brand line needs under them. Navigating switches the window to the page size and showing the bar
+// switches it back here, so the layout the user asked for is the one the start page always has.
 constexpr int  kBarWidth = 141;
-constexpr int  kBarHeight = 77;
+constexpr int  kBarHeight = 66;
 constexpr int  kMinWidth = 60;   // the window can be resized down to this and no further
 constexpr int  kMinHeight = 60;
 constexpr int  kMargin = 24;   // gap to the right and bottom edges of the desktop
@@ -236,7 +236,6 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   *{box-sizing:border-box;margin:0;padding:0;font-family:"Segoe UI",sans-serif}
   html,body{height:100%;background:#0f141b;color:#d7e1ea;overflow:hidden}
   body{display:flex;flex-direction:column;gap:3px;padding:3px;user-select:none;cursor:default}
-  #grip{height:8px;border-radius:3px;background:repeating-linear-gradient(90deg,#2b3644 0 6px,transparent 6px 12px);cursor:move}
   .row{display:flex;gap:3px;align-items:center}
   #url{flex:1;min-width:0;height:20px;padding:0 4px;font-size:11px;color:#eaf2f8;background:#060a0f;border:1px solid #2b3644;border-radius:4px}
   #url:focus{outline:none;border-color:#4a90c2}
@@ -300,7 +299,6 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   #setup .note{color:#5b6b7d;margin-top:3px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis}
 </style></head><body>
-<div id="grip" title="drag"></div>
 <div class="row"><input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="url o busqueda" value="%URL%"><button id="go" title="Go"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="5"/><path d="M10.1 10.1 15 15"/></svg></button></div>
 <div class="row"><button id="back" title="Back"%DISABLED%>&#8249;</button><button id="fwd" title="Forward"%DISABLED%>&#8250;</button><button id="setupbtn" title="Instalar tinybrowser"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v6.5"/><path d="M5 5.8 8 8.8 11 5.8"/><path d="M2.5 11.5v2h11v-2"/></svg></button><button id="options" title="Opciones"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><path d="M6 2v4M10 6v4M5 10v4"/></svg></button><button id="help" title="Comandos y atajos">?</button><button id="close" title="Close (Ctrl+Alt+X)">&#10005;</button></div>
 <div id="brand">%CONTAINER_BRAND%tinybrowser 2026</div>
@@ -448,10 +446,16 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
   };
 
   // The engine swallows mouse input before it reaches the host window, so dragging has to
-  // start inside the page: the grip reports pixel deltas and the host moves itself.
+  // start inside the page: the bar reports pixel deltas and the host moves itself. Anything that
+  // is not a control or a panel is a handle, so the empty room of the line -- the brand, the gaps
+  // between buttons -- moves the window, like the title bar of a normal window.
   function startDrag(element) {
     element.addEventListener("mousedown", function (e) {
       if (e.button !== 0) { return; }
+      if (e.target && e.target.closest &&
+          e.target.closest("button, input, select, label, a, #settings, #commands, #setup")) {
+        return;
+      }
       e.preventDefault();
       var lastX = e.screenX;
       var lastY = e.screenY;
@@ -468,7 +472,7 @@ constexpr wchar_t kBarTemplate[] = LR"HTML(<!doctype html>
       document.addEventListener("mouseup", stop, true);
     });
   }
-  startDrag(document.getElementById("grip"));
+  startDrag(document.body);
 
   var input = document.getElementById("url");
   input.focus();
@@ -2702,8 +2706,8 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       } else {
         g_ctrlClickArmed = false;
       }
-      // Any press inside the window starts a gesture -- an edge, Alt anywhere, or the grip, which
-      // the page reports as deltas -- so the other copies are read once, right here. With the rule
+      // Any press inside the window starts a gesture -- an edge, Alt anywhere, or a drag the bar
+      // reports as deltas -- so the other copies are read once, right here. With the rule
       // off there is nothing to compare against, so the enumeration is skipped entirely.
       if (g_blockOverlap) {
         SnapshotNeighbours();
@@ -2736,7 +2740,7 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
   return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
-// The bar's grip reports deltas from the page, so it lands here instead of in the hook.
+// The bar reports its drag as deltas from the page, so it lands here instead of in the hook.
 void MoveBy(long dx, long dy) {
   if ((dx == 0 && dy == 0) || !g_window) {
     return;

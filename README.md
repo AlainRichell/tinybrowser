@@ -43,7 +43,7 @@ the full table; the short version is size, install and per-window identity.
 ## Run it
 
 - Double click `tinybrowser.exe`. The window opens at the bottom-right corner, always on top, at the
-  size of its start bar: **141×77**, the size that puts the magnifier right above the close button.
+  size of its start bar: **141×66**, the size that puts the magnifier right above the close button.
 - It also takes an address: `tinybrowser.exe es.wikipedia.org` (handy for shortcuts, and for
   `--container "Work"`, see below).
 - Type and press Enter. No dots means a Google search. The cursor is already in the field.

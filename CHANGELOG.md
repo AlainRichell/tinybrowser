@@ -1,5 +1,14 @@
 # Novedades
 
+## 1.1.14 - 2026-11-27
+
+- **La barra de inicio pierde la franja de puntos y el alto que ocupaba.** La ventana de inicio pasa
+  de 141×77 a **141×66**: los dos botones de arriba quedan igual, con la lupa encima de la X, y el
+  espacio que gastaba la franja ahora no está.
+- La ventana se sigue moviendo desde la barra arrastrando sobre cualquier parte vacía de ella (la
+  línea de la marca, los huecos entre botones); los botones y los paneles no arrastran.
+- La versión sube a **1.1.14**.
+
 ## 1.1.13 - 2026-11-27
 
 - **La pantalla de inicio se ve igual en cualquier monitor.** El ancho de la barra (141 px) y el de
