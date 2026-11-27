@@ -1,5 +1,18 @@
 # Novedades
 
+## 1.1.13 - 2026-11-27
+
+- **La pantalla de inicio se ve igual en cualquier monitor.** El ancho de la barra (141 px) y el de
+  la página (160×90) son medidas de diseño, no píxeles del monitor. En un portátil al 125 % o 150 %
+  la barra se abría con menos sitio del que necesita: los botones de la última fila quedaban cortados
+  y la lupa descuadrada de la X. Ahora la ventana se abre al tamaño que le toca en cada pantalla, con
+  todos los botones a la vista y la lupa justo encima de la X.
+- Una ventana que se arrastra a un monitor con otro escalado toma el tamaño que Windows propone, así
+  que no se encoge ni se recorta al cambiar de pantalla. La tira flotante sigue la misma regla.
+- **La línea de la marca nombra también el perfil Default**, con un punto gris neutro. Antes quedaba
+  vacía justo en las ventanas que no eligen contenedor, que son casi todas.
+- La versión sube a **1.1.13**.
+
 ## 1.1.12 - 2026-11-23
 
 - **Ctrl+clic en un enlace abre otra ventana de tiny.** El enlace se abre en una instancia nueva,

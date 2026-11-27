@@ -1646,17 +1646,17 @@ std::wstring ContainerOptions() {
   return html;
 }
 
-// The brand line of the bar: the dot and the name, and nothing at all in Default -- which is every
-// window that never asked for a container.
+// The brand line of the bar: the dot and the name of the container the window is in. Default is
+// named too -- most windows never asked for a container, and that is exactly the case the line has
+// to answer instead of staying blank. Its dot is the neutral one: a palette colour would make the
+// default jar look like one somebody created.
 std::wstring ContainerBrand() {
-  if (g_container.empty()) {
-    return std::wstring();
-  }
+  const bool isDefault = g_container.empty();
+  const COLORREF dot = isDefault ? RGB(0x5b, 0x6b, 0x7d) : ContainerColour(g_container);
   wchar_t colour[16] = {};
-  const COLORREF dot = ContainerColour(g_container);
   wsprintfW(colour, L"#%02x%02x%02x", GetRValue(dot), GetGValue(dot), GetBValue(dot));
   return L"<span class=\"dot\" style=\"background:" + std::wstring(colour) + L"\"></span>" +
-         EscapeAttribute(g_container) + L" &middot; ";
+         (isDefault ? std::wstring(L"Default") : EscapeAttribute(g_container)) + L" &middot; ";
 }
 
 // A switch is app-wide: the other copies pick it up from the file instead of keeping their own.
@@ -2185,6 +2185,25 @@ void EdgeChars(int edges) {
 }
 
 
+// The window is measured in physical pixels and the engine lays its page out in CSS pixels scaled by
+// the monitor, so the sizes in this file are layout pixels and are converted here: on a 125 % screen
+// a 141 px window would only get 113 px of layout and the bar's button row would be cut off. The bar
+// is a fixed interface, so its layout is the same on every monitor.
+int ScaleForDpi(int value, UINT dpi) {
+  // Rounded up: a window a fraction of a pixel short of the bar's 141 cuts its last button, and that
+  // layout has nothing to spare.
+  return (int)(((long long)value * (dpi ? dpi : 96) + 95) / 96);
+}
+int UnscaleForDpi(int value, UINT dpi) {
+  return (int)(((long long)value * 96) / (dpi ? dpi : 96));  // rounded down: it is a width to fit in
+}
+// The DPI a window is drawn at. Before there is one (the creation) this is the system's, which is the
+// monitor the window is placed on; 96 is the answer when Windows cannot tell.
+UINT WindowDpi(HWND window) {
+  const UINT dpi = window ? GetDpiForWindow(window) : GetDpiForSystem();
+  return dpi ? dpi : 96;
+}
+
 // The whole desktop, taskbar and any second monitor included. The work area is what the *default*
 // placement uses to open above the taskbar; a move or a resize is not limited by it, because this
 // window is topmost and covering the taskbar is a placement the user asks for.
@@ -2561,15 +2580,19 @@ void ResizeTo(POINT point) {
   if (std::wcschr(g_resizeEdge, L'n') && top < desktop.top) top = desktop.top;
   int width = right - left;
   int height = bottom - top;
-  // At the minimum the dragged edge stops while the opposite one stays where it was.
-  if (width < kMinWidth) {
-    width = kMinWidth;
+  // At the minimum the dragged edge stops while the opposite one stays where it was. The floor is a
+  // layout size like the two canonical ones, so it comes out the same on every monitor.
+  const UINT dpi = WindowDpi(g_window);
+  const int minWidth = ScaleForDpi(kMinWidth, dpi);
+  const int minHeight = ScaleForDpi(kMinHeight, dpi);
+  if (width < minWidth) {
+    width = minWidth;
     if (std::wcschr(g_resizeEdge, L'w')) {
       left = right - width;
     }
   }
-  if (height < kMinHeight) {
-    height = kMinHeight;
+  if (height < minHeight) {
+    height = minHeight;
     if (std::wcschr(g_resizeEdge, L'n')) {
       top = bottom - height;
     }
@@ -2820,20 +2843,25 @@ constexpr UINT kFitDelayNext = 1200;
 
 void ApplyFitZoom() {
   RECT client = {};
-  const int target = (g_window && GetClientRect(g_window, &client)) ? (int)(client.right - client.left)
-                                                                   : kWidth;
+  const UINT dpi = WindowDpi(g_window);
+  // The page is measured in CSS pixels, so the target is the viewport in CSS pixels too; the client
+  // rectangle comes in physical ones and on a scaled monitor it is wider than what the page sees.
+  const int target = (g_window && GetClientRect(g_window, &client))
+                         ? UnscaleForDpi((int)(client.right - client.left), dpi)
+                         : kWidth;
   if (g_showingBar || g_widestSeen <= target || !g_controller) {
     return;
   }
   double zoom = (double)target / (double)g_widestSeen;
   int ppem = 0;
   int fontHundredths = 0;
+  const double scale = (double)dpi / 96.0;
   if (kCrispText && g_bodyFont > 1.0) {
     // The largest whole number of physical pixels the body font can occupy and still fit.
     fontHundredths = (int)(g_bodyFont * 100.0 + 0.5);
-    ppem = (int)((double)target * g_bodyFont / (double)g_widestSeen);
+    ppem = (int)((double)target * scale * g_bodyFont / (double)g_widestSeen);
     if (ppem >= 1) {
-      zoom = (double)ppem / g_bodyFont;
+      zoom = (double)ppem / (g_bodyFont * scale);
     } else {
       ppem = 0;
     }
@@ -2975,8 +3003,8 @@ void DefaultPlacement(int width, int height, int* x, int* y) {
 
 // The window lives at one of two sizes: the bar's and the page's. A window the user resized by
 // hand matches neither, and is left alone, so switching between the two never undoes a manual
-// resize.
-void ResizeIfCanonical(int width, int height) {
+// resize. Both are named in layout pixels; the window takes them in physical ones.
+void ResizeIfCanonical(int layoutWidth, int layoutHeight) {
   if (!g_window) {
     return;
   }
@@ -2984,10 +3012,14 @@ void ResizeIfCanonical(int width, int height) {
   if (!GetWindowRect(g_window, &rect)) {
     return;
   }
+  const UINT dpi = WindowDpi(g_window);
+  const int width = ScaleForDpi(layoutWidth, dpi);
+  const int height = ScaleForDpi(layoutHeight, dpi);
   const int currentWidth = rect.right - rect.left;
   const int currentHeight = rect.bottom - rect.top;
-  const bool canonical = (currentWidth == kBarWidth && currentHeight == kBarHeight) ||
-                         (currentWidth == kWidth && currentHeight == kHeight);
+  const bool canonical =
+      (currentWidth == ScaleForDpi(kBarWidth, dpi) && currentHeight == ScaleForDpi(kBarHeight, dpi)) ||
+      (currentWidth == ScaleForDpi(kWidth, dpi) && currentHeight == ScaleForDpi(kHeight, dpi));
   if (!canonical || (currentWidth == width && currentHeight == height)) {
     return;
   }
@@ -4871,6 +4903,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       }
       return 0;
     }
+    // The sizes in this file are layout pixels: on a monitor with another scale Windows suggests the
+    // rectangle that keeps them the same, and taking it is what keeps the bar's buttons on screen
+    // when the window is dragged to a screen that is not the one it was born on.
+    case WM_DPICHANGED: {
+      const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
+      if (suggested) {
+        SetWindowPos(window, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      return 0;
+    }
     case WM_TIMER:
       if (wparam == kPickTimer) {
         POINT tip = {};
@@ -5420,7 +5464,10 @@ int StripWidthFor(HWND owner, bool* withUrl) {
   if (!owner || !GetWindowRect(owner, &rect)) {
     return 0;
   }
-  const int maxWidth = (rect.right - rect.left) - kStripSide * 2;
+  // The owner is measured in physical pixels and the line is laid out in CSS ones: the width this
+  // answers with is a layout width, and the side margin belongs to that same scale.
+  const int maxWidth =
+      UnscaleForDpi((int)(rect.right - rect.left), WindowDpi(owner)) - kStripSide * 2;
   constexpr int kPlainButtons = 7;  // back, forward, install, options, help, pin, close
   const int plain = kPlainButtons * kStripButton + (kPlainButtons - 1) * kStripGapPx +
                     2 * kStripPadding + 2 * kStripBorder;
@@ -5455,8 +5502,8 @@ void PlaceStrip() {
     return;
   }
   bool withUrl = false;
-  const int width = StripWidthFor(g_stripOwner, &withUrl);
-  if (width <= 0) {
+  const int layoutWidth = StripWidthFor(g_stripOwner, &withUrl);
+  if (layoutWidth <= 0) {
     return;
   }
   // Only when the answer changes: a window that moves asks this dozens of times per gesture, and
@@ -5465,13 +5512,17 @@ void PlaceStrip() {
     g_stripFieldShown = withUrl;
     ApplyStripField(withUrl);
   }
+  const UINT dpi = WindowDpi(g_stripOwner);
+  const int width = ScaleForDpi(layoutWidth, dpi);
+  const int height = ScaleForDpi(kStripHeight, dpi);
+  const int gap = ScaleForDpi(kStripGap, dpi);
   const int ownerWidth = owner.right - owner.left;
   int left = owner.left + (ownerWidth - width) / 2;
-  int top = owner.top - kStripHeight - kStripGap;
+  int top = owner.top - height - gap;
   MONITORINFO info = {sizeof(info)};
   if (GetMonitorInfoW(MonitorFromWindow(g_stripOwner, MONITOR_DEFAULTTONEAREST), &info)) {
     if (top < info.rcWork.top) {
-      top = owner.bottom + kStripGap;
+      top = owner.bottom + gap;
     }
     if (left + width > info.rcWork.right) {
       left = info.rcWork.right - width;
@@ -5479,16 +5530,16 @@ void PlaceStrip() {
     if (left < info.rcWork.left) {
       left = info.rcWork.left;
     }
-    if (top + kStripHeight > info.rcWork.bottom) {
-      top = info.rcWork.bottom - kStripHeight;
+    if (top + height > info.rcWork.bottom) {
+      top = info.rcWork.bottom - height;
     }
     if (top < info.rcWork.top) {
       top = info.rcWork.top;
     }
   }
-  SetWindowPos(g_stripWindow, g_stripOwner, left, top, width, kStripHeight, SWP_NOACTIVATE);
+  SetWindowPos(g_stripWindow, g_stripOwner, left, top, width, height, SWP_NOACTIVATE);
   if (g_stripController) {
-    RECT bounds = {0, 0, width, kStripHeight};
+    RECT bounds = {0, 0, width, height};
     g_stripController->put_Bounds(bounds);
   }
 }
@@ -5720,7 +5771,8 @@ void CreateStripWindow() {
   // only while the window it belongs to is.
   g_stripWindow = CreateWindowExW(WS_EX_TOOLWINDOW | (g_pinned ? WS_EX_TOPMOST : 0) |
                                       WS_EX_NOREDIRECTIONBITMAP,
-                                  kStripClass, kTitle, WS_POPUP, 0, 0, 10, kStripHeight, nullptr,
+                                  kStripClass, kTitle, WS_POPUP, 0, 0, 10,
+                                  ScaleForDpi(kStripHeight, WindowDpi(g_window)), nullptr,
                                   nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!g_stripWindow) {
     return;
@@ -5933,8 +5985,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
   const bool startsOnPage = !g_startTarget.empty();
   int x = 0;
   int y = 0;
-  int width = startsOnPage ? kWidth : kBarWidth;
-  int height = startsOnPage ? kHeight : kBarHeight;
+  const UINT dpi = WindowDpi(nullptr);
+  int width = ScaleForDpi(startsOnPage ? kWidth : kBarWidth, dpi);
+  int height = ScaleForDpi(startsOnPage ? kHeight : kBarHeight, dpi);
   if (g_hasPlacedRect) {
     x = g_placedRect.left;
     y = g_placedRect.top;
