@@ -73,6 +73,8 @@ constexpr UINT kHotkeyState = 7;      // Ctrl+Alt+G
 constexpr UINT kHotkeyOne = 8;        // Ctrl+Alt+W
 // No chord of its own: the forward button of the mouse is what sends it.
 constexpr UINT kHotkeyForward = 20;
+// What the hook -- and the close path -- posts to the window: wparam is one of the ids above.
+constexpr UINT kHotkeyMessage = WM_APP + 1;
 // CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
@@ -91,6 +93,9 @@ constexpr UINT kCommandContainer = 19;
 // The listener found this window still unused: come forward with a fresh start page and the caret in
 // the address field, which is what Ctrl+Alt+T gives when it has to open one.
 constexpr UINT kCommandReused = 21;
+// The window hid itself on WM_CLOSE and asks the loop to take the engines down: closing them from
+// inside WM_DESTROY is a synchronous, message-pumping call in a window that no longer exists.
+constexpr UINT kCommandClosed = 22;
 // Asked with SendMessage by the copy that owns the chord: the answer is the flag above.
 constexpr UINT kAskHiddenByW = WM_APP + 3;
 // Asked by the listener before Ctrl+Alt+T opens anything: does this window still have nothing but its
@@ -226,6 +231,10 @@ std::wstring g_pagePanel;
 // Ctrl+Alt+W hid this copy, so the next press brings it back instead of hiding another one. Each
 // copy keeps its own answer and the chord owner asks for it; nothing is shared between processes.
 bool g_hiddenByW = false;
+// This window is on its way out. From the press that closes it until the process ends nothing else is
+// obeyed: Close() pumps the message queue, so a command dispatched in the middle of the teardown would
+// re-enter a window that is being taken apart.
+bool g_closing = false;
 int g_fitPass = 0;     // measurements taken for the current page
 int g_widestSeen = 0;  // widest layout seen for the current page, in CSS pixels
 double g_bodyFont = 0.0;  // body font size of the page, in CSS pixels
@@ -1276,7 +1285,28 @@ void ShowInstance(bool focus) {
   }
 }
 
+// Closing a window closes two engines, and neither may be closed from inside WM_DESTROY: Close() is
+// synchronous and pumps the message queue, so whatever it dispatches lands on a window that no longer
+// exists -- and the profile is one, so a stall there freezes every other tiny window too (WebView2 runs
+// a single browser process per user data folder, whatever the number of windows using it).
+// The press therefore hides the window at once -- which is what the user reads as "closed" -- and the
+// engines go down from the message loop, one turn later, with the window still alive.
+void BeginClose() {
+  if (g_closing || !g_window) {
+    return;
+  }
+  g_closing = true;
+  StopPicking();  // the pipette holds the capture and draws its own cursor over the whole desktop
+  HideStrip();
+  ShowWindow(g_window, SW_HIDE);
+  PostMessageW(g_window, kHotkeyMessage, kCommandClosed, 0);
+}
+
 void HandleHotkey(UINT id, LPARAM data) {
+  // On the way out, only the teardown itself is answered.
+  if (g_closing && id != kCommandClosed) {
+    return;
+  }
   if (id == kHotkeyBar) {
     ToggleStartSurface();
   } else if (id == kHotkeyQuit) {
@@ -1347,6 +1377,17 @@ void HandleHotkey(UINT id, LPARAM data) {
     }
   } else if (id == kCommandPickCancel) {
     StopPicking();
+  } else if (id == kCommandClosed) {
+    // The engines, in the order the window stops needing them: the strip's first (it is the second
+    // controller of the same environment), then the page's, and only then the window, whose WM_DESTROY
+    // finds nothing engine-shaped left to do.
+    DestroyStrip();
+    g_webview.Reset();
+    if (g_controller) {
+      g_controller->Close();
+      g_controller.Reset();
+    }
+    DestroyWindow(g_window);
   }
 }
 
@@ -1355,7 +1396,6 @@ void HandleHotkey(UINT id, LPARAM data) {
 // Virtual-key codes for letters are the uppercase character values: 'S' = 0x53, 'X' = 0x58,
 // 'D' = 0x44, 'Z' = 0x5A, 'C' = 0x43, 'W' = 0x57. Registering the lowercase values is accepted but
 // never matches.
-constexpr UINT kHotkeyMessage = WM_APP + 1;
 constexpr UINT kHotkeyKeyS = L'S';
 constexpr UINT kHotkeyKeyX = L'X';
 constexpr UINT kHotkeyKeyD = L'D';
@@ -2826,7 +2866,9 @@ void RefreshPanelOrBar(const wchar_t* which) {
 }
 
 void OnBarCommand(const std::wstring& message) {
-  if (message.empty()) {
+  // The page can post while the engines are being closed (Close() pumps the queue): nothing it says
+  // applies to a window that is going away.
+  if (g_closing || message.empty()) {
     return;
   }
   switch (message[0]) {
@@ -4966,8 +5008,9 @@ void ForwardMouse(UINT message, WPARAM wparam, LPARAM lparam) {
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-  // Explorer restarted: the shell lost every icon it had and asks the apps to put theirs back.
-  if (g_taskbarCreated && message == g_taskbarCreated) {
+  // Explorer restarted: the shell lost every icon it had and asks the apps to put theirs back. Not
+  // while closing: the icon goes away with this window.
+  if (!g_closing && g_taskbarCreated && message == g_taskbarCreated) {
     g_trayIconAdded = false;
     ApplyTrayMode();
     return 0;
@@ -5040,7 +5083,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       HandleHotkey((UINT)wparam, lparam);
       return 0;
     case kTrayMessage:
-      OnTrayMessage(lparam);
+      // The menu opens a modal loop of its own; a click on the icon while the engines are going down
+      // must not put that on top of the teardown.
+      if (!g_closing) {
+        OnTrayMessage(lparam);
+      }
       return 0;
     case kAskHiddenByW:
       // Synchronous on purpose: SendMessage hands the answer back to the copy that owns the chord,
@@ -5101,7 +5148,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
       }
       return 0;
+    // Closing is not a DestroyWindow with the engines still up: Close() pumps the queue and the
+    // profile is shared, so the teardown waits for the message loop (see BeginClose).
+    case WM_CLOSE:
+      BeginClose();
+      return 0;
     case WM_DESTROY:
+      // A destroy that did not come through BeginClose (Windows ending the session) still has to take
+      // the engines down here; the flags and the guards work the same way on this path.
+      g_closing = true;
       DestroyStrip();  // the second engine goes with the window it belongs to
       g_heldTrayIcon = RemoveTrayIcon();
       g_webview.Reset();
@@ -5492,7 +5547,7 @@ void ShowPagePanel(const wchar_t* which) {
 // replacing it, so asking for one never takes the page away; and nothing closes the strip except the
 // chord and the X.
 void OnStripCommand(const std::wstring& message) {
-  if (message.empty()) {
+  if (g_closing || message.empty()) {
     return;
   }
   switch (message[0]) {

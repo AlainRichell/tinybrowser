@@ -1,5 +1,16 @@
 # Novedades
 
+## 1.1.17 - 2026-11-28
+
+- **Cerrar una ventana ya no puede colgar las demás.** El cierre desmontaba los motores dentro de
+  `WM_DESTROY`, con la ventana ya destruida, y `Close()` es síncrono y bombea la cola de mensajes: lo
+  que se despachara ahí re-entraba en una ventana a medio desmontar. Como todas las ventanas comparten
+  un solo proceso de navegador (el perfil es uno), un atasco en ese punto dejaba congelada la página de
+  las otras ventanas —lo que se ve como «cerré la segunda ventana y se colgó la primera»—. Ahora la
+  ventana se oculta al instante y los motores se cierran desde el bucle de mensajes, con la ventana
+  todavía viva; mientras se cierra no se obedece ningún otro comando, ni de la página ni de la tira.
+- La versión sube a **1.1.17**.
+
 ## 1.1.16 - 2026-11-27
 
 - **`Ctrl+Alt+T` ya no abre una ventana de más cuando hay una sin usar.** Si una ventana de tiny sigue
