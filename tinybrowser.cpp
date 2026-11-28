@@ -88,8 +88,14 @@ constexpr UINT kCommandShowOne = 18;     // ... and bring it back
 // This window moved to another container: the engine that has to be replaced is the one asking, so
 // the teardown waits for the message loop instead of running inside the engine's own callback.
 constexpr UINT kCommandContainer = 19;
+// The listener found this window still unused: come forward with a fresh start page and the caret in
+// the address field, which is what Ctrl+Alt+T gives when it has to open one.
+constexpr UINT kCommandReused = 21;
 // Asked with SendMessage by the copy that owns the chord: the answer is the flag above.
 constexpr UINT kAskHiddenByW = WM_APP + 3;
+// Asked by the listener before Ctrl+Alt+T opens anything: does this window still have nothing but its
+// empty start page? The one that says yes is reused instead of opening another window just like it.
+constexpr UINT kAskPristine = WM_APP + 4;
 // The icon answers on its own message, away from the chords' kHotkeyMessage.
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kTrayId = 1;  // one icon per window handle, and this app has one
@@ -1296,6 +1302,12 @@ void HandleHotkey(UINT id, LPARAM data) {
     HideInstance();
   } else if (id == kCommandShowOne) {
     ShowInstance(data != 0);
+  } else if (id == kCommandReused) {
+    // Ctrl+Alt+T found this window unused, so it is this window that answers the chord: it comes
+    // forward and shows the same start page a window that has just been created shows, with the caret
+    // in the address field and nothing else touched.
+    ShowInstance(true);
+    ShowBar();
   } else if (id == kCommandSettings) {
     LoadSettings();  // another copy changed a switch: take its answer from the file
     ApplyTrayMode();
@@ -3675,9 +3687,43 @@ constexpr wchar_t kListenerRunValue[] = L"TinyBrowserListener";
 constexpr int kListenerHotkey = 1;  // the only message this window answers
 constexpr UINT kListenerKey = L'T';
 
+// Ctrl+Alt+T is "a window ready to type". When one is already sitting on its empty start page, that
+// window is what the chord brings forward: opening a second window with the same empty page only adds
+// a window to close. The question is asked of every window of this app, top of the z-order first --
+// the one the user saw last -- and answered by the window itself, which is the only one that knows
+// whether it ever had an address in it.
+bool IsPristineWindow(HWND window) {
+  wchar_t name[64] = {};
+  if (!GetClassNameW(window, name, ARRAYSIZE(name)) || lstrcmpW(name, kWindowClass) != 0) {
+    return false;
+  }
+  if (!IsWindowVisible(window)) {
+    return false;
+  }
+  DWORD_PTR answer = 0;
+  // Bounded: a copy busy in a dialog of its own must not hold the chord for more than a blink.
+  if (!SendMessageTimeoutW(window, kAskPristine, 0, 0, SMTO_ABORTIFHUNG, 200, &answer)) {
+    return false;
+  }
+  return answer != 0;
+}
+
+HWND PristineWindow() {
+  for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+    if (IsPristineWindow(window)) {
+      return window;
+    }
+  }
+  return nullptr;
+}
+
 LRESULT CALLBACK ListenerProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
   if (message == WM_HOTKEY && (int)wparam == kListenerHotkey) {
-    LaunchNewWindow();
+    if (const HWND reuse = PristineWindow()) {
+      PostMessageW(reuse, kHotkeyMessage, kCommandReused, 0);
+    } else {
+      LaunchNewWindow();
+    }
     return 0;
   }
   // The uninstaller asks for this. Closing the window ends the loop below and the process with it.
@@ -5000,6 +5046,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
       // Synchronous on purpose: SendMessage hands the answer back to the copy that owns the chord,
       // which is the only one that needs it.
       return g_hiddenByW ? 1 : 0;
+    // ... and the same for the listener, which asks every window before Ctrl+Alt+T opens another one:
+    // an unused window is the start bar on screen with no address ever opened in it.
+    case kAskPristine:
+      return (IsWindowVisible(window) && g_showingBar && g_url.empty() && !g_picking) ? 1 : 0;
     case WM_SETCURSOR:
       if (g_picking && g_pickCursor) {
         SetCursor(g_pickCursor);

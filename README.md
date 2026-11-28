@@ -63,7 +63,7 @@ the full table; the short version is size, install and per-window identity.
 | `Ctrl+Alt+C` | Hide every window, or bring them all back |
 | `Ctrl+Alt+W` | Hide this one window; the next press brings that same one back |
 | `Ctrl+Alt+G` | Save this window to a `.to` file, or load one |
-| `Ctrl+Alt+T` | New window, even with tiny closed (a small listener owns this one) |
+| `Ctrl+Alt+T` | A window ready to type, even with tiny closed: an unused one comes forward instead of a second |
 | `Ctrl+Alt+X` | Close |
 
 **The two side buttons of a mouse** go back and forward, with the pointer anywhere over the window or

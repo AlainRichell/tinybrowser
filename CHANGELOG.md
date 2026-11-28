@@ -1,5 +1,17 @@
 # Novedades
 
+## 1.1.16 - 2026-11-27
+
+- **`Ctrl+Alt+T` ya no abre una ventana de más cuando hay una sin usar.** Si una ventana de tiny sigue
+  en su pantalla inicial, sin haber abierto nunca una dirección, el atajo la trae al frente con el
+  cursor en el campo de dirección —lo mismo que una ventana recién creada— en vez de abrir otra con la
+  misma pantalla vacía. Si no hay ninguna así (todas usadas, ocultas o cerradas) abre una nueva como
+  siempre.
+- La ventana reutilizada conserva su lugar, su tamaño y su contenedor: lo único que se rehace es la
+  pantalla inicial. Sirve cualquier ventana que esté en la calle, aunque esté detrás de otra
+  aplicación, y si hay varias sin usar gana la que estaba más arriba.
+- La versión sube a **1.1.16**.
+
 ## 1.1.15 - 2026-11-27
 
 - **Los dos botones laterales del mouse navegan.** El de atrás hace lo mismo que `Ctrl+Alt+Z` y el de
