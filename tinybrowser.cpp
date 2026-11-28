@@ -71,6 +71,8 @@ constexpr UINT kHotkeyHide = 5;       // Ctrl+Alt+C
 constexpr UINT kHotkeyPick = 6;       // Ctrl+Alt+A
 constexpr UINT kHotkeyState = 7;      // Ctrl+Alt+G
 constexpr UINT kHotkeyOne = 8;        // Ctrl+Alt+W
+// No chord of its own: the forward button of the mouse is what sends it.
+constexpr UINT kHotkeyForward = 20;
 // CTRL+ALT+C is app-wide, so the instance that owns it posts one of these to every copy instead of
 // toggling each window on its own: all of them follow the same command on the same press.
 constexpr UINT kCommandHideAll = 10;
@@ -870,6 +872,16 @@ void RunInPage(const wchar_t* script) {
   }
 }
 
+// One step in the page's own history, which is what the bar's arrows and the side buttons of a mouse
+// do. Nothing to walk while the bar itself is on screen: its document is a single entry, and stepping
+// it would leave the start page blank instead of doing nothing.
+void StepHistory(bool forward) {
+  if (g_url.empty() || g_showingBar) {
+    return;
+  }
+  RunInPage(forward ? L"history.forward()" : L"history.back()");
+}
+
 void DuplicateInNewInstance();  // defined with the placement helpers below
 void StateChord();  // Ctrl+Alt+G: freezes a page into a .to file, or brings one back
 
@@ -1268,9 +1280,9 @@ void HandleHotkey(UINT id, LPARAM data) {
   } else if (id == kHotkeyState) {
     StateChord();
   } else if (id == kHotkeyBack) {
-    if (!g_url.empty()) {
-      RunInPage(L"history.back()");
-    }
+    StepHistory(false);
+  } else if (id == kHotkeyForward) {
+    StepHistory(true);
   } else if (id == kHotkeyHide) {
     ToggleAllInstances();
   } else if (id == kHotkeyOne) {
@@ -2631,6 +2643,10 @@ void MoveTo(POINT point) {
 // The hook sees the mouse before the engine's scrollbars do, and swallowing an event here is what
 // makes the strip behave like a window border instead of like a page: the press never reaches the
 // scrollbar, and during a drag nothing else on the system reacts.
+// The strip's window lives with the rest of the strip, further down: the hook has to recognise it as
+// this window's own surface, because the extra buttons work over the strip too.
+extern HWND g_stripWindow;
+
 LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
   if (code == HC_ACTION && g_window) {
     // A hidden window must not eat anything: its rectangle is still there, so the press and hover
@@ -2659,6 +2675,25 @@ LRESULT CALLBACK LowLevelMouse(int code, WPARAM wparam, LPARAM lparam) {
       }
       if (wparam == WM_RBUTTONDOWN) {
         PostMessageW(g_window, kHotkeyMessage, kCommandPickCancel, 0);
+        return 1;
+      }
+    }
+    // A mouse with the two extra buttons means back and forward in every browser, so they do here
+    // too. The pointer decides which window answers -- the same z-order gate the left press uses,
+    // because a covered window must not navigate on a click that lands on what is in front -- and the
+    // press is swallowed: a windowed engine receives XBUTTON itself and would step twice.
+    if (wparam == WM_XBUTTONDOWN || wparam == WM_XBUTTONUP) {
+      const HWND under = WindowFromPoint(point);
+      const HWND root = under ? GetAncestor(under, GA_ROOT) : nullptr;
+      if (!g_picking && (root == g_window || root == g_stripWindow)) {
+        if (wparam == WM_XBUTTONDOWN) {
+          const WORD extra = HIWORD(mouse->mouseData);
+          if (extra == XBUTTON1) {
+            PostMessageW(g_window, kHotkeyMessage, kHotkeyBack, 0);
+          } else if (extra == XBUTTON2) {
+            PostMessageW(g_window, kHotkeyMessage, kHotkeyForward, 0);
+          }
+        }
         return 1;
       }
     }

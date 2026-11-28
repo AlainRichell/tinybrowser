@@ -66,6 +66,9 @@ the full table; the short version is size, install and per-window identity.
 | `Ctrl+Alt+T` | New window, even with tiny closed (a small listener owns this one) |
 | `Ctrl+Alt+X` | Close |
 
+**The two side buttons of a mouse** go back and forward, with the pointer anywhere over the window or
+over the strip. Nothing to go back to means nothing happens.
+
 **Ctrl+click a link** opens it in another tiny window beside this one: same size, 4 px of air, same
 container and corners, and no colours keyed — a clean page. If the desktop has no free spot, nothing
 opens, just like duplicating. Plain clicks, `target="_blank"` included, still change the current
@@ -73,7 +76,8 @@ window.
 
 Resize by dragging any edge or corner; the minimum is **60×60**. When a page loads the window goes
 to the page size, **160×90**, and comes back to the bar size when you show the bar — unless you
-resized it by hand. Move it with the dotted strip at the top or `Alt` + drag anywhere, page included.
+resized it by hand. Move it by dragging any empty spot of the bar, or `Alt` + drag anywhere, page
+included.
 
 ## Containers
 
@@ -84,8 +88,8 @@ It is a WebView2 profile inside the same data folder, so it costs no extra brows
 - The **Contenedor** row at the top of the options panel lists the containers that already exist;
   **Nuevo…** asks for a name in the same line and creates it. Choosing another one reloads the page in
   that profile: window, size and zoom stay.
-- The brand line at the bottom-right of the bar shows the container with a coloured dot (nothing in
-  the Default profile).
+- The brand line at the bottom-right of the bar shows the container with a coloured dot; the Default
+  profile is named too, with the neutral grey dot.
 - `.to` snapshots remember their container, `Ctrl+Alt+D` duplicates inside the same one, and a
   shortcut can open straight into it: `tinybrowser.exe --container "Work"`.
 - The names live in the `[containers]` section of `tinybrowser.ini`; each container's data is its own

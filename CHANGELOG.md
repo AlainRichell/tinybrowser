@@ -1,5 +1,14 @@
 # Novedades
 
+## 1.1.15 - 2026-11-27
+
+- **Los dos botones laterales del mouse navegan.** El de atrás hace lo mismo que `Ctrl+Alt+Z` y el de
+  adelante va al otro lado, con el puntero sobre la ventana o sobre la tira. En la pantalla de inicio
+  no hacen nada: ahí no hay página que recorrer.
+- Cuenta la ventana que está debajo del puntero, no todas: si tiny está tapado por otra aplicación, el
+  botón va a la de delante, como en cualquier navegador.
+- La versión sube a **1.1.15**.
+
 ## 1.1.14 - 2026-11-27
 
 - **La barra de inicio pierde la franja de puntos y el alto que ocupaba.** La ventana de inicio pasa
